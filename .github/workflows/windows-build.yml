@@ -578,9 +578,11 @@ jobs:
           $dllDeps = Get-Content dll-dumpbin.txt -Raw
           if ($dllDeps -match 'onnxruntime\.dll') { throw 'photokhan_lib.dll imports onnxruntime.dll - not static' }
           Write-Host 'OK: photokhan_lib.dll has no onnxruntime.dll dependency (static ORT)'
-          # Real-face sample: public-domain astronaut portrait from scikit-image.
+          # Real-face sample: public-domain astronaut portrait from scikit-image
+          # (v0.14.2 pin - the file was removed from newer tags; data/__init__.py
+          # in that tag identifies it as public domain).
           $sample = Join-Path $env:GITHUB_WORKSPACE 'astronaut.png'
-          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/scikit-image/scikit-image/main/skimage/data/astronaut.png' -OutFile $sample -UseBasicParsing
+          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/scikit-image/scikit-image/v0.14.2/skimage/data/astronaut.png' -OutFile $sample -UseBasicParsing
           if (-not (Test-Path $sample)) { throw 'failed to download astronaut.png sample' }
           $csFile = Join-Path $env:GITHUB_WORKSPACE 'phk-dll-smoke.cs'
           $dllAbs = (Join-Path $env:GITHUB_WORKSPACE 'src-tauri\target\release\photokhan_lib.dll').Replace('\', '\\')
@@ -589,11 +591,11 @@ jobs:
               'using System.Runtime.InteropServices;',
               'using System.Text;',
               'public static class PhkDll {',
-              '    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]',
+              ('    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]'),
               '    public static extern int phk_set_models_dir(string dir);',
-              '    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]',
+              ('    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]'),
               '    public static extern int phk_process(string input, string outputDir);',
-              '    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]',
+              ('    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]'),
               '    public static extern int phk_last_error(StringBuilder buf, int cap);',
               '}'
           ) -join [Environment]::NewLine
