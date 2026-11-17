@@ -1,0 +1,400 @@
+name: windows-build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 300
+    env:
+      # ort-sys static-link contract (2.0.0-rc.15): ORT_LIB_PATH must point at the
+      # directory containing Release\ (onnxruntime_*.lib) and _deps\ (externals).
+      ORT_LIB_PATH: 'D:\build\onnxruntime\build\Windows\Release'
+      ORT_LIB_PROFILE: 'Release'
+      ORT_PREFER_DYNAMIC_LINK: '0'
+      # Fail the link instead of silently downloading the prebuilt DLL when the
+      # static tree is misconfigured.
+      ORT_SKIP_DOWNLOAD: '1'
+      RUST_BACKTRACE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: A - Environment (toolchains, MSVC, ORT env)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          rustc -V
+          cargo -V
+          node -v
+          npm -v
+          cmake --version
+          python --version
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) { throw 'vswhere.exe not found - Visual Studio Installer missing' }
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) { throw 'MSVC (VC.Tools.x86.x64) not found via vswhere' }
+          $cl = Get-ChildItem -Path (Join-Path $vsPath 'VC\Tools\MSVC') -Recurse -File -Filter 'cl.exe' -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+          if (-not $cl) { throw 'cl.exe not found under VC\Tools\MSVC' }
+          Write-Host "cl.exe: $($cl.FullName)"
+          $clBanner = (& $cl.FullName 2>&1 | Select-Object -First 1)
+          $LASTEXITCODE = 0
+          Write-Host "cl: $clBanner"
+
+          Write-Host 'ORT env:'
+          Write-Host "  ORT_LIB_PATH=$env:ORT_LIB_PATH"
+          Write-Host "  ORT_LIB_PROFILE=$env:ORT_LIB_PROFILE"
+          Write-Host "  ORT_PREFER_DYNAMIC_LINK=$env:ORT_PREFER_DYNAMIC_LINK"
+          Write-Host "  ORT_SKIP_DOWNLOAD=$env:ORT_SKIP_DOWNLOAD"
+
+      - name: B1 - Rust toolchain 1.92.0 (pinned, rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.92.0'
+          components: rustfmt
+
+      - name: B2 - Node 22 (npm cache)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: B3 - cmake >= 3.28 guard
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $raw = (& cmake --version | Select-Object -First 1)
+          Write-Host "cmake: $raw"
+          $numeric = (($raw -replace '^cmake version\s+', '').Trim() -replace '^([0-9]+(\.[0-9]+){1,3}).*$', '$1')
+          if ($numeric -and ([version]$numeric -lt [version]'3.28.0')) {
+              Write-Host "cmake $numeric < 3.28 - upgrading via pip"
+              python -m pip install --upgrade cmake
+              if ($LASTEXITCODE -ne 0) { throw "pip cmake upgrade failed (exit $LASTEXITCODE)" }
+              $scripts = python -c "import sysconfig; print(sysconfig.get_paths()['scripts'])"
+              if ($LASTEXITCODE -ne 0) { throw 'failed to resolve pip Scripts dir' }
+              Write-Host "Adding pip Scripts dir to PATH: $scripts"
+              Add-Content -Path $env:GITHUB_PATH -Value $scripts
+          } else {
+              Write-Host 'cmake >= 3.28 - no upgrade needed'
+          }
+          cmake --version
+
+      - name: C1 - Cache ONNX Runtime source + build tree
+        uses: actions/cache@v4
+        with:
+          path: 'D:\build\onnxruntime'
+          key: ort-win-static-1.31.0-${{ hashFiles('build_ort_baseline.ps1') }}
+          restore-keys: |
+            ort-win-static-1.31.0-
+
+      # Run ALWAYS: a cache hit means the script reuses the tree incrementally;
+      # a miss means the full ~30-90 min static build.
+      - name: C2 - Build ONNX Runtime static Release (no AVX flags)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell -ExecutionPolicy Bypass -File build_ort_baseline.ps1 -BuildRoot D:\build -RepoDir D:\build\onnxruntime -LogPath D:\build\ort_build.log -SkipDumpbin
+          if ($LASTEXITCODE -ne 0) { throw "build_ort_baseline.ps1 failed (exit $LASTEXITCODE) - see D:\build\ort_build.log" }
+          Write-Host 'ONNX Runtime static build OK'
+
+      - name: C3 - Guard static-link prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $staticLib = 'D:\build\onnxruntime\build\Windows\Release\Release\onnxruntime_common.lib'
+          $depsDir = 'D:\build\onnxruntime\build\Windows\Release\_deps\protobuf-build'
+          if (-not (Test-Path $staticLib)) { throw "static lib missing: $staticLib" }
+          if (-not (Test-Path $depsDir)) { throw "_deps build tree missing: $depsDir" }
+          Write-Host "OK: $staticLib"
+          Write-Host "OK: $depsDir (protobuf externals present)"
+
+      - name: D - Rust checks (fmt, lib tests, release build)
+        working-directory: src-tauri
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo fmt --check --all
+          if ($LASTEXITCODE -ne 0) { throw 'cargo fmt --check failed' }
+          cargo test --lib
+          if ($LASTEXITCODE -ne 0) { throw 'cargo test --lib failed' }
+          cargo build --release
+          if ($LASTEXITCODE -ne 0) { throw 'cargo build --release failed (static ORT link via ORT_LIB_PATH)' }
+          Write-Host 'Rust checks OK - release build linked statically'
+
+      - name: E - Inference check (dev context, source tree)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PHOTOKHAN_MODELS_DIR = "$env:GITHUB_WORKSPACE\models"
+          & "$env:GITHUB_WORKSPACE\src-tauri\target\release\photokhan.exe" --self-test *> selftest-dev.json
+          if ($LASTEXITCODE -ne 0) { throw "self-test failed (exit $LASTEXITCODE)" }
+          $r = Get-Content selftest-dev.json -Raw | ConvertFrom-Json
+          if ($r.status -ne 'ok') { throw "self-test status is '$($r.status)', expected 'ok'" }
+          if ($r.model.sha256_match -ne $true) { throw 'model.sha256_match is not true' }
+          Write-Host "Self-test OK: $($r | ConvertTo-Json -Compress -Depth 6)"
+
+      - name: F - Tauri release build (NSIS installer)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw "npm ci failed (exit $LASTEXITCODE)" }
+          npm run tauri build -- --bundles nsis
+          if ($LASTEXITCODE -ne 0) { throw "tauri build failed (exit $LASTEXITCODE)" }
+          $installer = 'src-tauri\target\release\bundle\nsis\photokhan_0.1.0_x64-setup.exe'
+          if (-not (Test-Path $installer)) { throw "NSIS installer not found: $installer" }
+          Write-Host "Installer OK: $installer"
+
+      - name: G1 - dumpbin dependents (no onnxruntime.dll)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = 'src-tauri\target\release\photokhan.exe'
+          if (-not (Test-Path $exe)) { throw "photokhan.exe not found: $exe" }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) { throw 'vswhere.exe not found' }
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) { throw 'MSVC not found via vswhere' }
+          $dumpbin = Get-ChildItem -Path (Join-Path $vsPath 'VC\Tools\MSVC') -Recurse -File -Filter 'dumpbin.exe' -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin.exe not found under VC\Tools\MSVC' }
+          & $dumpbin.FullName /nologo /dependents $exe *> dumpbin.txt
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed (exit $LASTEXITCODE)" }
+          $deps = Get-Content dumpbin.txt -Raw
+          if ($deps -match 'onnxruntime\.dll') { throw 'dumpbin output mentions onnxruntime.dll - ORT was linked dynamically, not statically' }
+          Write-Host 'OK: no onnxruntime.dll dependency - static ORT link confirmed'
+
+      - name: G2 - Bundled resources + model SHA-256
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseDir = Join-Path $env:GITHUB_WORKSPACE 'src-tauri\target\release'
+          $expected = @('manifest.json', 'face_detection_yunet_2023mar.onnx', 'LICENSE')
+          $layout = $null
+          foreach ($candidate in @('models', 'resources\models', 'exe_dir', 'resources')) {
+              $base = switch ($candidate) {
+                  'models'           { Join-Path $releaseDir 'models' }
+                  'resources\models' { Join-Path (Join-Path $releaseDir 'resources') 'models' }
+                  'exe_dir'          { $releaseDir }
+                  'resources'        { Join-Path $releaseDir 'resources' }
+              }
+              $allPresent = $true
+              foreach ($name in $expected) {
+                  if (-not (Test-Path (Join-Path $base $name))) { $allPresent = $false; break }
+              }
+              if ($allPresent) { $layout = $candidate; break }
+          }
+          if (-not $layout) {
+              throw "Bundled resources missing in all layouts; expected: $($expected -join ', ')"
+          }
+          Write-Host "Resource layout produced by Tauri: $layout"
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_RESOURCE_LAYOUT=$layout"
+          $onnxRel = switch ($layout) {
+              'models'           { 'models\face_detection_yunet_2023mar.onnx' }
+              'resources\models' { 'resources\models\face_detection_yunet_2023mar.onnx' }
+              'exe_dir'          { 'face_detection_yunet_2023mar.onnx' }
+              'resources'        { 'resources\face_detection_yunet_2023mar.onnx' }
+          }
+          $onnx = Join-Path $releaseDir $onnxRel
+          $hash = (Get-FileHash -Path $onnx -Algorithm SHA256).Hash
+          Write-Host "model sha256: $hash"
+          if ($hash -ine '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4') {
+              throw "model sha256 mismatch: $hash"
+          }
+          Write-Host 'OK: bundled model SHA-256 matches manifest'
+
+      - name: G3 - Silent install to fixed dir
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:GITHUB_WORKSPACE 'src-tauri\target\release\bundle\nsis\photokhan_0.1.0_x64-setup.exe'
+          if (-not (Test-Path $installer)) { throw "installer not found: $installer" }
+          $targetDir = 'C:\phk-ci-install'
+          if (Test-Path $targetDir) { Remove-Item -Path $targetDir -Recurse -Force }
+          $p = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$targetDir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer exit code: $($p.ExitCode)" }
+          if (-not (Test-Path (Join-Path $targetDir 'photokhan.exe'))) { throw 'installed photokhan.exe missing' }
+          if (-not (Test-Path (Join-Path $targetDir 'uninstall-photokhan.exe'))) { throw 'uninstall-photokhan.exe missing' }
+          foreach ($name in @('manifest.json', 'face_detection_yunet_2023mar.onnx', 'LICENSE')) {
+              if (-not (Test-Path (Join-Path (Join-Path $targetDir 'models') $name))) { throw "installed model file missing: models\$name" }
+          }
+          $hash = (Get-FileHash -Path (Join-Path (Join-Path $targetDir 'models') 'face_detection_yunet_2023mar.onnx') -Algorithm SHA256).Hash
+          if ($hash -ine '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4') {
+              throw "installed model sha256 mismatch: $hash"
+          }
+          Write-Host "OK: silent install verified in $targetDir"
+
+      - name: G4 - Installed-run inference (fresh temp cwd)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Remove-Item Env:PHOTOKHAN_MODELS_DIR -ErrorAction SilentlyContinue
+          $work = Join-Path $env:TEMP ('phk-selftest-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $work | Out-Null
+          $outFile = Join-Path $env:GITHUB_WORKSPACE 'installed-selftest.json'
+          Push-Location $work
+          try {
+              & 'C:\phk-ci-install\photokhan.exe' --self-test *> $outFile
+              if ($LASTEXITCODE -ne 0) { throw "installed self-test exit code: $LASTEXITCODE" }
+              $r = Get-Content $outFile -Raw | ConvertFrom-Json
+              if ($r.status -ne 'ok') { throw "installed self-test status: '$($r.status)'" }
+              if ($r.resolution.selected -notin @('exe_dir', 'exe_dir/resources', 'exe_dir/models')) { throw "resolution.selected is '$($r.resolution.selected)', expected an exe-relative candidate" }
+              if ($r.model.sha256_match -ne $true) { throw 'installed model.sha256_match is not true' }
+              Write-Host "Installed self-test OK: $($r | ConvertTo-Json -Compress -Depth 6)"
+          }
+          finally {
+              Pop-Location
+          }
+
+      - name: G5 - WebView2 runtime presence (informational)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $guid = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $keys = @(
+              "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$guid",
+              "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$guid",
+              "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$guid"
+          )
+          $present = $false
+          $version = ''
+          foreach ($key in $keys) {
+              if (Test-Path $key) {
+                  $pv = (Get-ItemProperty -Path $key -ErrorAction SilentlyContinue).pv
+                  if ($pv) { $version = [string]$pv }
+                  Write-Host "WebView2 Runtime registry key found: $key (version $version)"
+                  $present = $true
+                  break
+              }
+          }
+          if (-not $present) { Write-Host 'WebView2 Runtime not detected on runner (informational)' }
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_WEBVIEW2_PRESENT=$($present.ToString().ToLower())"
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_WEBVIEW2_VERSION=$version"
+
+      - name: G6 - Hash installer, exe, model
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $modelRel = switch ($env:PHK_RESOURCE_LAYOUT) {
+              'models'           { 'src-tauri\target\release\models\face_detection_yunet_2023mar.onnx' }
+              'resources\models' { 'src-tauri\target\release\resources\models\face_detection_yunet_2023mar.onnx' }
+              'resources'        { 'src-tauri\target\release\resources\face_detection_yunet_2023mar.onnx' }
+              default            { 'src-tauri\target\release\face_detection_yunet_2023mar.onnx' }
+          }
+          $targets = @(
+              'src-tauri\target\release\bundle\nsis\photokhan_0.1.0_x64-setup.exe',
+              'src-tauri\target\release\photokhan.exe',
+              $modelRel
+          )
+          $lines = @()
+          foreach ($t in $targets) {
+              if (-not (Test-Path $t)) { throw "file missing for hashing: $t" }
+              $lines += ('{0}  {1}' -f (Get-FileHash -Path $t -Algorithm SHA256).Hash, $t)
+          }
+          $lines | Set-Content hashes.txt
+          Get-Content hashes.txt
+
+      - name: G7 - Write report.json
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dump = Get-Content dumpbin.txt -Raw
+          $apiCount = ([regex]::Matches($dump, 'api-ms-win-[^\s,]+')).Count
+          $dev = Get-Content selftest-dev.json -Raw | ConvertFrom-Json
+          $inst = Get-Content installed-selftest.json -Raw | ConvertFrom-Json
+          $installerSha = (Get-FileHash 'src-tauri\target\release\bundle\nsis\photokhan_0.1.0_x64-setup.exe' -Algorithm SHA256).Hash
+          $exeSha = (Get-FileHash 'src-tauri\target\release\photokhan.exe' -Algorithm SHA256).Hash
+          $modelSha = (Get-FileHash 'C:\phk-ci-install\models\face_detection_yunet_2023mar.onnx' -Algorithm SHA256).Hash
+          $report = [ordered]@{
+              git_ref      = $env:GITHUB_REF
+              git_sha      = $env:GITHUB_SHA
+              run_id       = $env:GITHUB_RUN_ID
+              ort_strategy = 'static'
+              ort_version  = 'v1.31.0'
+              dumpbin = [ordered]@{
+                  onnxruntime_dll_present = ($dump -match 'onnxruntime\.dll')
+                  vcruntime140_present = ($dump -match 'vcruntime140\.dll')
+                  msvcp140_present = ($dump -match 'msvcp140\.dll')
+                  api_ms_win_entries = $apiCount
+              }
+              resource_layout = $env:PHK_RESOURCE_LAYOUT
+              installed_dir = 'C:\phk-ci-install'
+              installed_files = @(Get-ChildItem 'C:\phk-ci-install' -File | ForEach-Object { $_.Name })
+              selftest_dev = [ordered]@{
+                  status = $dev.status
+                  resolution = $dev.resolution.selected
+                  model_sha256_match = $dev.model.sha256_match
+              }
+              selftest_installed = [ordered]@{
+                  status = $inst.status
+                  resolution = $inst.resolution.selected
+                  model_sha256_match = $inst.model.sha256_match
+              }
+              installer_sha256 = $installerSha
+              exe_sha256 = $exeSha
+              model_sha256 = $modelSha
+              webview2 = [ordered]@{
+                  present = ($env:PHK_WEBVIEW2_PRESENT -eq 'true')
+                  version = $env:PHK_WEBVIEW2_VERSION
+              }
+          }
+          $report | ConvertTo-Json -Depth 6 | Set-Content report.json
+          Get-Content report.json
+
+      # Stage the ORT build log inside the workspace: upload-artifact@v4 only
+      # accepts paths within the workspace.
+      - name: H0 - Stage ORT build log for diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path 'D:\build\ort_build.log') {
+              Copy-Item 'D:\build\ort_build.log' (Join-Path $env:GITHUB_WORKSPACE 'ort_build.log') -Force
+              Write-Host 'Staged D:\build\ort_build.log as ort_build.log'
+          } else {
+              Write-Host 'D:\build\ort_build.log not present - skipping (informational)'
+          }
+
+      # success() gate + throwing validation steps guarantee the installer is
+      # only uploaded when every assertion passed.
+      - name: H1 - Upload artifacts (photokhan-windows-x64)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: photokhan-windows-x64
+          path: |
+            src-tauri/target/release/bundle/nsis/photokhan_0.1.0_x64-setup.exe
+            report.json
+            dumpbin.txt
+            hashes.txt
+            selftest-dev.json
+            installed-selftest.json
+
+      - name: H2 - Upload diagnostics (windows-build-diagnostics)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-diagnostics
+          if-no-files-found: warn
+          path: |
+            report.json
+            dumpbin.txt
+            hashes.txt
+            selftest-dev.json
+            installed-selftest.json
+            ort_build.log
