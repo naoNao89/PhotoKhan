@@ -98,7 +98,10 @@ fn normal_photo_exports_one_face_at_contract_size() {
     assert_eq!(report.preset_id, "3x4");
     assert_eq!((report.output_width, report.output_height), (354, 472));
     assert_eq!(
-        report.output_path.file_name().and_then(|name| name.to_str()),
+        report
+            .output_path
+            .file_name()
+            .and_then(|name| name.to_str()),
         Some("img_1_normal_3x4_trang.jpg")
     );
     assert!(report.output_path.is_file());
@@ -152,7 +155,10 @@ fn every_m2_preset_exports_its_own_pixel_size() {
             .process(&source, &output_dir, &options)
             .unwrap_or_else(|error| panic!("preset {id} lỗi: {}", error.code));
 
-        println!("preset {id}: {}x{}", report.output_width, report.output_height);
+        println!(
+            "preset {id}: {}x{}",
+            report.output_width, report.output_height
+        );
         assert_eq!((report.output_width, report.output_height), (width, height));
         let exported = ::image::open(&report.output_path).expect("đọc ảnh xuất");
         assert_eq!(exported.width(), width);

@@ -169,7 +169,5 @@ pub fn select_single_face(mut faces: Vec<Face>) -> AppResult<Face> {
     if faces.len() > 1 {
         return Err(AppError::multiple_faces());
     }
-    faces
-        .pop()
-        .ok_or_else(AppError::face_not_found)
+    faces.pop().ok_or_else(AppError::face_not_found)
 }

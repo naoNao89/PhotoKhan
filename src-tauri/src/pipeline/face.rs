@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
-use ::image::imageops::FilterType;
 use ::image::RgbImage;
+use ::image::imageops::FilterType;
 use ort::environment::Environment;
 use ort::session::{Session, SessionOutputs};
 use ort::value::Tensor;
@@ -284,7 +284,7 @@ fn intersection_over_union(left: &Rect, right: &Rect) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{intersection_over_union, non_maximum_suppression, Face, Point, Rect};
+    use super::{Face, Point, Rect, intersection_over_union, non_maximum_suppression};
 
     fn face(x: f32, y: f32, score: f32) -> Face {
         Face {

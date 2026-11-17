@@ -57,7 +57,7 @@ pub fn by_id(id: &str) -> AppResult<Preset> {
 
 #[cfg(test)]
 mod tests {
-    use super::{by_id, DEFAULT_PRESET_ID, PRESETS};
+    use super::{DEFAULT_PRESET_ID, PRESETS, by_id};
 
     #[test]
     fn preset_pixels_match_srs_table() {

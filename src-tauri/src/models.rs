@@ -165,7 +165,8 @@ mod tests {
         let manifest = format!(
             r#"{{"version":1,"models":[{{"id":"yunet","name":"YuNet","version":"2023mar","file":"model.onnx","url":"","size":4,"sha256":"{sha256}","license":"MIT"}}]}}"#
         );
-        fs::write(dir.join(MANIFEST_FILE_NAME), manifest).map_err(|_| crate::error::AppError::model_invalid())
+        fs::write(dir.join(MANIFEST_FILE_NAME), manifest)
+            .map_err(|_| crate::error::AppError::model_invalid())
     }
 
     #[test]
@@ -179,8 +180,11 @@ mod tests {
     fn wrong_sha256_returns_e004() {
         let dir = unique_dir("model-bad-sha");
         fs::write(dir.join("model.onnx"), b"data").unwrap();
-        write_manifest(&dir, "0000000000000000000000000000000000000000000000000000000000000000")
-            .unwrap();
+        write_manifest(
+            &dir,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
 
         let error = ModelStore::new(dir).yunet_path().unwrap_err();
         assert_eq!(error.code, "E004");

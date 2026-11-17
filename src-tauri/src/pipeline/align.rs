@@ -208,7 +208,13 @@ mod tests {
     #[test]
     fn bilinear_sampling_returns_fill_outside_image() {
         let image = RgbImage::from_pixel(10, 10, Rgb([10, 20, 30]));
-        assert_eq!(sample_bilinear(&image, -5.0, 5.0, [255, 255, 255]), [255, 255, 255]);
-        assert_eq!(sample_bilinear(&image, 5.0, 5.0, [255, 255, 255]), [10, 20, 30]);
+        assert_eq!(
+            sample_bilinear(&image, -5.0, 5.0, [255, 255, 255]),
+            [255, 255, 255]
+        );
+        assert_eq!(
+            sample_bilinear(&image, 5.0, 5.0, [255, 255, 255]),
+            [10, 20, 30]
+        );
     }
 }

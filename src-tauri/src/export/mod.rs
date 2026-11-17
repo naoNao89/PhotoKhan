@@ -104,11 +104,19 @@ mod tests {
     #[test]
     fn file_name_matches_section_9_3() {
         assert_eq!(
-            output_file_name(PathBuf::from(r"C:\anh\Nguyen Van A.JPG").as_path(), "3x4", "trang"),
+            output_file_name(
+                PathBuf::from(r"C:\anh\Nguyen Van A.JPG").as_path(),
+                "3x4",
+                "trang"
+            ),
             "Nguyen_Van_A_3x4_trang.jpg"
         );
         assert_eq!(
-            output_file_name(PathBuf::from("img 1 normal.jpg").as_path(), "4x6", "xanhduong"),
+            output_file_name(
+                PathBuf::from("img 1 normal.jpg").as_path(),
+                "4x6",
+                "xanhduong"
+            ),
             "img_1_normal_4x6_xanhduong.jpg"
         );
     }

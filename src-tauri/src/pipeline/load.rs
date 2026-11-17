@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use ::image::imageops::FilterType;
-use ::image::{DynamicImage, ImageDecoder, ImageReader, RgbImage};
 use ::image::metadata::Orientation;
+use ::image::{DynamicImage, ImageDecoder, ImageReader, RgbImage};
 
 use crate::error::{AppError, AppResult};
 

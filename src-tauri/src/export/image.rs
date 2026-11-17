@@ -2,8 +2,8 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use ::image::codecs::jpeg::{JpegEncoder, PixelDensity};
 use ::image::RgbImage;
+use ::image::codecs::jpeg::{JpegEncoder, PixelDensity};
 
 use crate::error::{AppError, AppResult};
 
@@ -65,7 +65,7 @@ mod tests {
 
     use ::image::{Rgb, RgbImage};
 
-    use super::{write_jpeg, JPEG_DPI, JPEG_QUALITY};
+    use super::{JPEG_DPI, JPEG_QUALITY, write_jpeg};
 
     fn unique_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
