@@ -242,16 +242,24 @@ jobs:
               if ($LASTEXITCODE -eq 0) { $urBuilt = $true }
           }
           if (-not $urBuilt) { throw 'utf8_range target not buildable from the parent or protobuf solution' }
-          $urExpected = Join-Path (Join-Path $pbBuild 'third_party') 'utf8_range\Release\utf8_range.lib'
-          $urLib = Get-ChildItem -Path (Join-Path $pbBuild 'third_party\utf8_range') -Recurse -File -Filter 'utf8_range.lib' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $urLib) { throw 'utf8_range.lib not found under protobuf-build\third_party\utf8_range' }
-          if ($urLib.FullName -ne $urExpected) {
-              New-Item -ItemType Directory -Force -Path (Split-Path $urExpected -Parent) | Out-Null
-              Copy-Item $urLib.FullName $urExpected -Force
-              Write-Host "utf8_range.lib copied to expected path: $urExpected"
-          } else {
-              Write-Host "utf8_range.lib already at expected path: $urExpected"
+          # protobuf's vendored fork emits libutf8_range.lib / libutf8_validity.lib;
+          # ort-sys links the archives under their plain target names.
+          # utf8_validity is a sibling target libprotobuf-lite links - best-effort.
+          cmake --build $ortBuild --config Release --parallel --target utf8_validity | Out-Null
+          $urDir = Join-Path $pbBuild 'third_party\utf8_range'
+          foreach ($target in @('utf8_range', 'utf8_validity')) {
+              $lib = Get-ChildItem -Path $urDir -Recurse -File -Filter "*$target*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($lib) {
+                  $dest = Join-Path (Join-Path $urDir 'Release') "$target.lib"
+                  New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
+                  Copy-Item $lib.FullName $dest -Force
+                  Write-Host "$target.lib <- $($lib.Name)"
+              } else {
+                  Write-Host "$target.lib not produced (informational)"
+              }
           }
+          $urExpected = Join-Path (Join-Path $urDir 'Release') 'utf8_range.lib'
+          if (-not (Test-Path $urExpected)) { throw "utf8_range.lib missing at $urExpected" }
 
       - name: C3 - Guard static-link prerequisites
         shell: pwsh
