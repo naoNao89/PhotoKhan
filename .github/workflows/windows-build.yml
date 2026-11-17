@@ -80,9 +80,14 @@ jobs:
         with:
           workspaces: 'src-tauri'
           cache-on-failure: 'true'
-          # ort-sys re-emits its native link directives from ORT_LIB_PATH each
-          # build (the rlib does not bundle the .lib archives), so this cache is
-          # independent of the ORT tree; the tree itself is cached by C1.
+          # rustc's default for -l static is +bundle: ort-sys's rlib COPIES the
+          # onnxruntime/re2/abseil archives into the .rlib, and cargo does not
+          # track their contents (only the env vars). A cached ort-sys rlib could
+          # therefore embed an older SDK than the ORT tree on disk. Key the Rust
+          # cache on the ORT build-script hash + the ORT link env vars so any ORT
+          # tree change also invalidates the Rust cache.
+          key: ort-${{ hashFiles('build_ort_baseline.ps1') }}
+          env-vars: 'ORT_LIB_PATH ORT_LIB_PROFILE ORT_PREFER_DYNAMIC_LINK ORT_SKIP_DOWNLOAD'
 
       - name: B3 - cmake >= 3.28 guard
         shell: pwsh
