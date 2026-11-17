@@ -563,6 +563,7 @@ jobs:
           Get-Content report.json
 
       - name: G8 - Inference DLL build + drop-in smoke test
+        working-directory: src-tauri
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -574,16 +575,17 @@ jobs:
           $rustExit = $LASTEXITCODE
           Remove-Item Env:RUSTFLAGS
           if ($rustExit -ne 0) { throw 'DLL unwind build failed' }
-          $dll = 'src-tauri\target\release\photokhan_lib.dll'
+          $dll = 'target\release\photokhan_lib.dll'
           if (-not (Test-Path $dll)) { throw "inference DLL not found: $dll" }
+          $dllDump = Join-Path $env:GITHUB_WORKSPACE 'dll-dumpbin.txt'
           # static ORT check on the DLL itself
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $dumpbin = Get-ChildItem -Path (Join-Path $vsPath 'VC\Tools\MSVC') -Recurse -File -Filter 'dumpbin.exe' -ErrorAction SilentlyContinue |
               Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
           if (-not $dumpbin) { throw 'dumpbin.exe not found' }
-          & $dumpbin.FullName /nologo /dependents $dll *> dll-dumpbin.txt
-          $dllDeps = Get-Content dll-dumpbin.txt -Raw
+          & $dumpbin.FullName /nologo /dependents $dll *> $dllDump
+          $dllDeps = Get-Content $dllDump -Raw
           if ($dllDeps -match 'onnxruntime\.dll') { throw 'photokhan_lib.dll imports onnxruntime.dll - not static' }
           Write-Host 'OK: photokhan_lib.dll has no onnxruntime.dll dependency (static ORT)'
           # Real-face sample: public-domain astronaut portrait from scikit-image
