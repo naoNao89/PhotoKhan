@@ -320,9 +320,18 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $env:PHOTOKHAN_MODELS_DIR = "$env:GITHUB_WORKSPACE\models"
-          & "$env:GITHUB_WORKSPACE\src-tauri\target\release\photokhan.exe" --self-test *> selftest-dev.json
-          if ($LASTEXITCODE -ne 0) { throw "self-test failed (exit $LASTEXITCODE)" }
-          $r = Get-Content selftest-dev.json -Raw | ConvertFrom-Json
+          $outFile = Join-Path $env:GITHUB_WORKSPACE 'selftest-dev.json'
+          $errFile = Join-Path $env:GITHUB_WORKSPACE 'selftest-dev.err.log'
+          # GUI-subsystem exe: `&` + `*>` leaves $LASTEXITCODE empty; Start-Process
+          # with explicit redirects gives a reliable exit code and captures stderr.
+          $p = Start-Process -FilePath "$env:GITHUB_WORKSPACE\src-tauri\target\release\photokhan.exe" `
+              -ArgumentList '--self-test' -Wait -PassThru `
+              -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+          if ($p.ExitCode -ne 0) {
+              throw "self-test failed (exit $($p.ExitCode)); stderr: $(Get-Content $errFile -Raw -ErrorAction SilentlyContinue)"
+          }
+          $r = Get-Content $outFile -Raw | ConvertFrom-Json
+          if (-not $r) { throw "self-test produced no JSON; stderr: $(Get-Content $errFile -Raw -ErrorAction SilentlyContinue)" }
           if ($r.status -ne 'ok') { throw "self-test status is '$($r.status)', expected 'ok'" }
           if ($r.model.sha256_match -ne $true) { throw 'model.sha256_match is not true' }
           if ($r.model.tensor_validation.output_count -ne 12) { throw "expected 12 YuNet output tensors, got $($r.model.tensor_validation.output_count)" }
@@ -441,9 +450,11 @@ jobs:
           Write-Host "Outbound blocked for $exe (rule $ruleName verified)"
           Push-Location $work
           try {
-              & $exe --self-test *> $outFile
-              if ($LASTEXITCODE -ne 0) { throw "installed self-test exit code: $LASTEXITCODE" }
+              $p = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru `
+                  -RedirectStandardOutput $outFile -RedirectStandardError (Join-Path $env:GITHUB_WORKSPACE 'installed-selftest.err.log')
+              if ($p.ExitCode -ne 0) { throw "installed self-test exit code: $($p.ExitCode)" }
               $r = Get-Content $outFile -Raw | ConvertFrom-Json
+              if (-not $r) { throw "installed self-test produced no JSON" }
               if ($r.status -ne 'ok') { throw "installed self-test status: '$($r.status)'" }
               if ($r.resolution.selected -notin @('exe_dir', 'exe_dir/resources', 'exe_dir/models')) { throw "resolution.selected is '$($r.resolution.selected)', expected an exe-relative candidate" }
               if ($r.model.sha256_match -ne $true) { throw 'installed model.sha256_match is not true' }
