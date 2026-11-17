@@ -417,6 +417,8 @@ jobs:
           if (-not $thirdParty) { throw 'installed ThirdPartyNotices.txt not found (statically linked ORT/re2/abseil notices)' }
           $ortLicense = Get-ChildItem -Path $targetDir -Recurse -File -Filter 'LICENSE-ONNX-Runtime' -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $ortLicense) { throw 'installed LICENSE-ONNX-Runtime not found' }
+          $utf8License = Get-ChildItem -Path $targetDir -Recurse -File -Filter 'LICENSE-utf8_range' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $utf8License) { throw 'installed LICENSE-utf8_range not found (newly linked protobuf dependency)' }
           $hash = (Get-FileHash -Path $model.FullName -Algorithm SHA256).Hash
           if ($hash -ine '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4') {
               throw "installed model sha256 mismatch: $hash"

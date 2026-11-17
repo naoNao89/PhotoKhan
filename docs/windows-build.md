@@ -120,6 +120,7 @@ Uploaded by `windows-build.yml` (artifact `photokhan-windows-x64` on success; `w
 
 - **YuNet** face detection model — MIT, Shiqi Yu; the model's license text ships as `models/LICENSE` inside the installer.
 - **ONNX Runtime v1.31.0** — MIT; statically linked, no runtime files distributed. Full MIT license ships as `licenses\LICENSE-ONNX-Runtime`; `licenses\ThirdPartyNotices.txt` covers its bundled third-party components (RE2, Abseil, ...).
+- **utf8_range** (protobuf v33.6 dependency, statically linked) — MIT, © 2019 Yibo Cai / © 2022 Google LLC; ships as `licenses\LICENSE-utf8_range`.
 - **WebView2 Runtime** — Microsoft runtime, redistributable per Microsoft terms; the installer bootstraps it when absent.
 
 See `THIRD_PARTY_LICENSES.md` for the project-level license list.

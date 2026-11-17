@@ -12,3 +12,7 @@ Mã nguồn: https://github.com/microsoft/onnxruntime
 WebView2 (Microsoft Edge WebView2 Runtime)
 Yêu cầu lúc chạy cho giao diện Tauri; bộ cài NSIS nhúng bootstrapper WebView2
 Trang chủ: https://developer.microsoft.com/microsoft-edge/webview2
+
+utf8_range (phụ thuộc protobuf v33.6, liên kết tĩnh)
+Giấy phép: MIT, © 2019 Yibo Cai, © 2022 Google LLC — văn bản đầy đủ tại licenses/LICENSE-utf8_range
+Mã nguồn: https://github.com/protobuf/utf8_range
