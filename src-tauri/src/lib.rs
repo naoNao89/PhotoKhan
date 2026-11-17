@@ -7,6 +7,7 @@ mod models;
 mod persistence;
 mod pipeline;
 mod queue;
+pub mod selftest;
 mod settings;
 mod state;
 mod throttle;
