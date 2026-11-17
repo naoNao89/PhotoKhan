@@ -240,7 +240,12 @@ fn expected_sha256_from_manifest(models_dir: &Path) -> AppResult<String> {
 fn sha256_file(path: &Path) -> AppResult<String> {
     let bytes = fs::read(path).map_err(|_| AppError::model_invalid())?;
     let digest = Sha256::digest(&bytes);
-    Ok(format!("{digest:x}"))
+    // GenericArray has no LowerHex in sha2 0.11; format byte-by-byte (models.rs pattern).
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    Ok(hex)
 }
 
 /// Báo cáo lỗi theo cấu trúc thống nhất với CONTRACT.md.

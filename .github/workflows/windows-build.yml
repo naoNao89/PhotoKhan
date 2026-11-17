@@ -322,18 +322,36 @@ jobs:
           $work = Join-Path $env:TEMP ('phk-selftest-' + [guid]::NewGuid().ToString('N'))
           New-Item -ItemType Directory -Path $work | Out-Null
           $outFile = Join-Path $env:GITHUB_WORKSPACE 'installed-selftest.json'
+          $exe = 'C:\phk-ci-install\photokhan.exe'
+          $ruleName = 'phk-ci-block-outbound'
+          # Offline proof: block ALL outbound traffic for the installed exe and run
+          # inference under that rule. Success then demonstrates the model path
+          # makes no network call. The rule is asserted and removed in finally.
+          $mpssvc = Get-Service mpssvc -ErrorAction SilentlyContinue
+          if (-not $mpssvc -or $mpssvc.Status -ne 'Running') { throw 'Windows Defender Firewall service not running - cannot prove offline operation' }
+          $disabledProfiles = Get-NetFirewallProfile | Where-Object { $_.Enabled -ne $true }
+          if ($disabledProfiles) { throw "Firewall profile disabled: $($disabledProfiles.Name -join ', ')" }
+          Remove-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
+          New-NetFirewallRule -Name $ruleName -DisplayName 'phk-ci block outbound' -Direction Outbound -Action Block -Program $exe | Out-Null
+          $rule = Get-NetFirewallRule -Name $ruleName
+          if (-not $rule -or $rule.Enabled -ne 'True' -or $rule.Direction -ne 'Outbound' -or $rule.Action -ne 'Block') {
+              throw "firewall rule not effective: $($rule | ConvertTo-Json -Compress)"
+          }
+          Write-Host "Outbound blocked for $exe (rule $ruleName verified)"
           Push-Location $work
           try {
-              & 'C:\phk-ci-install\photokhan.exe' --self-test *> $outFile
+              & $exe --self-test *> $outFile
               if ($LASTEXITCODE -ne 0) { throw "installed self-test exit code: $LASTEXITCODE" }
               $r = Get-Content $outFile -Raw | ConvertFrom-Json
               if ($r.status -ne 'ok') { throw "installed self-test status: '$($r.status)'" }
               if ($r.resolution.selected -notin @('exe_dir', 'exe_dir/resources', 'exe_dir/models')) { throw "resolution.selected is '$($r.resolution.selected)', expected an exe-relative candidate" }
               if ($r.model.sha256_match -ne $true) { throw 'installed model.sha256_match is not true' }
               if ($r.model.tensor_validation.output_count -ne 12) { throw "installed self-test: expected 12 YuNet output tensors, got $($r.model.tensor_validation.output_count)" }
-              Write-Host "Installed self-test OK: $($r | ConvertTo-Json -Compress -Depth 6)"
+              Write-Host "Installed self-test OK (offline): $($r | ConvertTo-Json -Compress -Depth 6)"
+              Add-Content -Path $env:GITHUB_ENV -Value 'PHK_OFFLINE_VERIFIED=true'
           }
           finally {
+              Remove-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
               Pop-Location
           }
 
@@ -422,6 +440,9 @@ jobs:
               webview2 = [ordered]@{
                   present = ($env:PHK_WEBVIEW2_PRESENT -eq 'true')
                   version = $env:PHK_WEBVIEW2_VERSION
+              }
+              offline = [ordered]@{
+                  outbound_blocked_and_passed = ($env:PHK_OFFLINE_VERIFIED -eq 'true')
               }
           }
           $report | ConvertTo-Json -Depth 6 | Set-Content report.json
