@@ -147,8 +147,8 @@ jobs:
           $wrapper = @(
               'cmake_minimum_required(VERSION 3.20)',
               'project(re2_bootstrap CXX)',
-              '# re2 2024-07-02 requires abseil: provide it from ORT\'s own abseil-cpp source',
-              '# (same tag as ORT\'s cmake/deps.txt) before adding re2.',
+              '# re2 2024-07-02 requires abseil: provide it from ORT''s own abseil-cpp source',
+              '# (same tag as ORT''s cmake/deps.txt) before adding re2.',
               'add_subdirectory(${ABSL_SRC} absl)',
               'add_subdirectory(${RE2_SRC} re2)'
           ) -join [Environment]::NewLine
@@ -159,7 +159,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "re2 cmake configure failed (exit $LASTEXITCODE)" }
           cmake --build $build --config Release --parallel --target re2
           if ($LASTEXITCODE -ne 0) { throw "re2 build failed (exit $LASTEXITCODE)" }
-          $re2Lib = Join-Path $build 'Release\re2.lib'
+          # add_subdirectory(${RE2_SRC} re2) places the target's output in the
+          # wrapper's binary tree under the re2/ subdirectory.
+          $re2Lib = Join-Path (Join-Path $build 're2') 'Release\re2.lib'
           if (-not (Test-Path $re2Lib)) { throw "re2.lib not produced at $re2Lib" }
           New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
           Copy-Item $re2Lib $target -Force
