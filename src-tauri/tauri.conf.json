@@ -36,7 +36,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../models/": "models/"
+      "../models/": "models/",
+      "../licenses/": "licenses/"
     },
     "windows": {
       "nsis": {

@@ -17,7 +17,7 @@ Scope:
   - **Older CPU support**: no compile-time AVX flags means the binary runs on CPUs without AVX2/AVX512 (MLAS still dispatches to SIMD at runtime behind CPUID checks).
   - **No DLL shipping**: no `onnxruntime.dll` beside the exe, no version-skew between app and runtime.
   - **ort-sys link contract**: `ort` 2.0.0-rc.15 statically links when `ORT_LIB_PATH` points at the directory containing `Release\` (the `onnxruntime_*.lib` files) and `_deps\` (protobuf/onnx/nsync/cpuinfo/clog build trees), `ORT_LIB_PROFILE=Release`, and `ORT_PREFER_DYNAMIC_LINK=0`. `ORT_SKIP_DOWNLOAD=1` makes a misconfigured build **fail at link time** instead of silently downloading the prebuilt DLL.
-- **Model, manifest and license ship as Tauri resources** (`bundle.resources` map form: `{ "../models/": "models/" }` in `tauri.conf.json`). Tauri rewrites parent-traversal in *array* resource entries to `_up_` (`../models/...` would land in `_up_\models\`), so the map form is used to place the files under `models\`. On Windows Tauri v2's `resource_dir` is the exe directory, so the installer ships `manifest.json`, `face_detection_yunet_2023mar.onnx` and `LICENSE` under `<install>\models\`, matching the app's existing `beside_executable()` convention (`<exe>\models`). The app's ModelStore SHA-256 verification is unchanged; the CI asserts the bundled model hash matches `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4`.
+- **Model, manifest and license ship as Tauri resources** (`bundle.resources` map form: `{ "../models/": "models/", "../licenses/": "licenses/" }` in `tauri.conf.json`). Tauri rewrites parent-traversal in *array* resource entries to `_up_` (`../models/...` would land in `_up_\models\`), so the map form is used to place the files under `models\` and `licenses\`. On Windows Tauri v2's `resource_dir` is the exe directory, so the installer ships `manifest.json`, `face_detection_yunet_2023mar.onnx` and `LICENSE` (YuNet MIT) under `<install>\models\`, plus `LICENSE-ONNX-Runtime` and `ThirdPartyNotices.txt` (ORT MIT + RE2/Abseil notices) under `<install>\licenses\`, matching the app's existing `beside_executable()` convention (`<exe>\models`). The app's ModelStore SHA-256 verification is unchanged; the CI asserts the bundled model hash matches `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4`.
 - **WebView2**: `webviewInstallMode = embedBootstrapper` — the installer bootstraps the WebView2 Runtime if missing (WebView2 is preinstalled on `windows-2022` runners; presence is recorded in `report.json` as informational).
 - **NSIS `currentUser`**: per-user install, no admin elevation required.
 
@@ -119,7 +119,7 @@ Uploaded by `windows-build.yml` (artifact `photokhan-windows-x64` on success; `w
 ## 7. Licenses
 
 - **YuNet** face detection model — MIT, Shiqi Yu; the model's license text ships as `models/LICENSE` inside the installer.
-- **ONNX Runtime v1.31.0** — MIT; statically linked, no runtime files distributed.
+- **ONNX Runtime v1.31.0** — MIT; statically linked, no runtime files distributed. Full MIT license ships as `licenses\LICENSE-ONNX-Runtime`; `licenses\ThirdPartyNotices.txt` covers its bundled third-party components (RE2, Abseil, ...).
 - **WebView2 Runtime** — Microsoft runtime, redistributable per Microsoft terms; the installer bootstraps it when absent.
 
 See `THIRD_PARTY_LICENSES.md` for the project-level license list.

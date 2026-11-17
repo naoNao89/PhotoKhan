@@ -156,6 +156,7 @@ jobs:
           Add-Content -Path $cmakeLists -Value 'project(re2_bootstrap CXX)'
           Add-Content -Path $cmakeLists -Value 'set(CMAKE_CXX_STANDARD 17)'
           Add-Content -Path $cmakeLists -Value 'set(CMAKE_CXX_STANDARD_REQUIRED ON)'
+          Add-Content -Path $cmakeLists -Value 'set(CMAKE_SKIP_INSTALL_RULES TRUE)'
           Add-Content -Path $cmakeLists -Value "add_subdirectory(`"$abslSrcFwd`" absl)"
           Add-Content -Path $cmakeLists -Value "add_subdirectory(`"$srcFwd`" re2)"
           Write-Host 'wrapper CMakeLists.txt:'
@@ -300,6 +301,12 @@ jobs:
           foreach ($name in @('manifest.json', 'LICENSE')) {
               if (-not (Test-Path (Join-Path $model.Directory.FullName $name))) { throw "installed resource missing beside model: $name" }
           }
+          # Statically-linked third-party licenses must ship: ORT MIT + its notices
+          # (covers RE2, Abseil, ...).
+          $thirdParty = Get-ChildItem -Path $targetDir -Recurse -File -Filter 'ThirdPartyNotices.txt' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $thirdParty) { throw 'installed ThirdPartyNotices.txt not found (statically linked ORT/re2/abseil notices)' }
+          $ortLicense = Get-ChildItem -Path $targetDir -Recurse -File -Filter 'LICENSE-ONNX-Runtime' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $ortLicense) { throw 'installed LICENSE-ONNX-Runtime not found' }
           $hash = (Get-FileHash -Path $model.FullName -Algorithm SHA256).Hash
           if ($hash -ine '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4') {
               throw "installed model sha256 mismatch: $hash"
