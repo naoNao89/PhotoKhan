@@ -228,8 +228,15 @@ jobs:
           Write-Host "model_package.lib -> $mpTarget"
 
           $pbBuild = Join-Path $ortBuild '_deps\protobuf-build'
-          if (-not (Test-Path (Join-Path $pbBuild 'protobuf.sln'))) { throw "protobuf build tree missing: $pbBuild" }
-          cmake --build $pbBuild --config Release --parallel --target utf8_range
+          if (-not (Test-Path $pbBuild)) { throw "protobuf build tree missing: $pbBuild" }
+          # protobuf may be a subproject of the parent solution (FetchContent) or
+          # have its own solution (ExternalProject) - try both.
+          $pbSln = Join-Path $pbBuild 'protobuf.sln'
+          if (Test-Path $pbSln) {
+              cmake --build $pbSln --config Release --parallel --target utf8_range
+          } else {
+              cmake --build $ortBuild --config Release --parallel --target utf8_range
+          }
           if ($LASTEXITCODE -ne 0) { throw "utf8_range target build failed (exit $LASTEXITCODE)" }
           $urExpected = Join-Path (Join-Path $pbBuild 'third_party') 'utf8_range\Release\utf8_range.lib'
           $urLib = Get-ChildItem -Path (Join-Path $pbBuild 'third_party\utf8_range') -Recurse -File -Filter 'utf8_range.lib' -ErrorAction SilentlyContinue | Select-Object -First 1
