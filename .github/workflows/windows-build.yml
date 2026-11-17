@@ -309,15 +309,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           cargo fmt --check --all
           if ($LASTEXITCODE -ne 0) { throw 'cargo fmt --check failed' }
-          # Two PRE-EXISTING app-behavior tests (pipeline/crop, pipeline/load) document
-          # unfinished M2 features and fail on the unmodified repo (they never ran on CI
-          # before - the static link was broken). Packaging scope excludes implementing
-          # app features, so they are skipped and tracked for the app milestone; all
-          # other tests and every packaging assertion still gate the build.
-          Write-Host 'NOTE: skipping known-failing pre-existing app tests (M2-unfinished):'
-          Write-Host '  pipeline::crop::tests::frame_outside_image_is_padded_with_fill_color'
-          Write-Host '  pipeline::load::tests::long_edge_is_clamped_to_6000_pixels'
-          cargo test --lib -- --skip pipeline::crop::tests::frame_outside_image_is_padded_with_fill_color --skip pipeline::load::tests::long_edge_is_clamped_to_6000_pixels
+          cargo test --lib
           if ($LASTEXITCODE -ne 0) { throw 'cargo test --lib failed' }
           cargo build --release
           if ($LASTEXITCODE -ne 0) { throw 'cargo build --release failed (static ORT link via ORT_LIB_PATH)' }

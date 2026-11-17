@@ -45,7 +45,9 @@ pub fn load_normalized(path: &Path) -> AppResult<RgbImage> {
         let scale = MAX_LONG_EDGE as f32 / long_edge as f32;
         let width = ((image.width() as f32 * scale).round() as u32).max(1);
         let height = ((image.height() as f32 * scale).round() as u32).max(1);
-        image = image.resize(width, height, FilterType::Lanczos3);
+        // resize_exact: `resize` is aspect-preserving and would shrink the long
+        // edge to 5980 instead of clamping it to exactly MAX_LONG_EDGE.
+        image = image.resize_exact(width, height, FilterType::Lanczos3);
     }
 
     Ok(image.to_rgb8())

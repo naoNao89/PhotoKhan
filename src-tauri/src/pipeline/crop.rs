@@ -131,17 +131,17 @@ mod tests {
         let image = RgbImage::from_pixel(100, 100, Rgb([10, 20, 30]));
         let face = Face {
             bbox: Rect {
-                x: 5.0,
+                x: -5.0,
                 y: 5.0,
                 width: 40.0,
                 height: 40.0,
             },
             landmarks: [
+                Point { x: 5.0, y: 15.0 },
                 Point { x: 15.0, y: 15.0 },
-                Point { x: 25.0, y: 15.0 },
-                Point { x: 20.0, y: 25.0 },
+                Point { x: 10.0, y: 25.0 },
+                Point { x: 5.0, y: 30.0 },
                 Point { x: 15.0, y: 30.0 },
-                Point { x: 25.0, y: 30.0 },
             ],
             score: 0.9,
         };
