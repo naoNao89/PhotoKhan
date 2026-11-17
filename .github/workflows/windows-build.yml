@@ -69,16 +69,10 @@ jobs:
           toolchain: '1.92.0'
           components: rustfmt
 
-      - name: B2 - Node 22 (npm cache)
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
       - name: B2b - Rust dependency cache (target + ~/.cargo)
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: 'src-tauri'
+          workspaces: 'dll'
           cache-on-failure: 'true'
           # rustc's default for -l static is +bundle: ort-sys's rlib COPIES the
           # onnxruntime/re2/abseil archives into the .rlib, and cargo does not
@@ -86,7 +80,7 @@ jobs:
           # therefore embed an older SDK than the ORT tree on disk. Key the Rust
           # cache on the ORT build-script hash + the ORT link env vars so any ORT
           # tree change also invalidates the Rust cache.
-          key: ort-${{ hashFiles('build_ort_baseline.ps1', '.github/workflows/windows-build.yml') }}
+          key: phk-dll-ort-${{ hashFiles('build_ort_baseline.ps1') }}
           env-vars: 'ORT_LIB_PATH ORT_LIB_PROFILE ORT_PREFER_DYNAMIC_LINK ORT_SKIP_DOWNLOAD'
 
       - name: B3 - cmake >= 3.28 guard
@@ -302,59 +296,34 @@ jobs:
           path: 'D:\build\onnxruntime'
           key: ort-win-static-1.31.0-${{ hashFiles('build_ort_baseline.ps1') }}
 
-      - name: D - Rust checks (fmt, lib tests, release build)
-        working-directory: src-tauri
+      - name: D - DLL crate checks (fmt, unit tests, release build)
+        working-directory: dll
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           cargo fmt --check --all
           if ($LASTEXITCODE -ne 0) { throw 'cargo fmt --check failed' }
-          cargo test --lib
-          if ($LASTEXITCODE -ne 0) { throw 'cargo test --lib failed' }
+          cargo test
+          if ($LASTEXITCODE -ne 0) { throw 'cargo test failed' }
+          # The dll crate release profile deliberately keeps DEFAULT unwind
+          # (unlike the old Tauri app panic=abort), so catch_unwind works and
+          # Rust panics are contained as PHK_ERR_PANIC - no RUSTFLAGS override.
           cargo build --release
           if ($LASTEXITCODE -ne 0) { throw 'cargo build --release failed (static ORT link via ORT_LIB_PATH)' }
-          Write-Host 'Rust checks OK - release build linked statically'
+          $dll = 'target\release\phk_dll.dll'
+          if (-not (Test-Path $dll)) { throw "release DLL not found: $dll" }
+          Write-Host "Release DLL OK: $dll"
 
-      - name: E - Inference check (dev context, source tree)
+      - name: E - DLL bundle + smoke (self-contained, models from DLL dir)
+        working-directory: dll
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $env:PHOTOKHAN_MODELS_DIR = "$env:GITHUB_WORKSPACE\models"
-          $outFile = Join-Path $env:GITHUB_WORKSPACE 'selftest-dev.json'
-          $errFile = Join-Path $env:GITHUB_WORKSPACE 'selftest-dev.err.log'
-          # GUI-subsystem exe: `&` + `*>` leaves $LASTEXITCODE empty; Start-Process
-          # with explicit redirects gives a reliable exit code and captures stderr.
-          $p = Start-Process -FilePath "$env:GITHUB_WORKSPACE\src-tauri\target\release\photokhan.exe" `
-              -ArgumentList '--self-test' -Wait -PassThru `
-              -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-          if ($p.ExitCode -ne 0) {
-              throw "self-test failed (exit $($p.ExitCode)); stderr: $(Get-Content $errFile -Raw -ErrorAction SilentlyContinue)"
-          }
-          $r = Get-Content $outFile -Raw | ConvertFrom-Json
-          if (-not $r) { throw "self-test produced no JSON; stderr: $(Get-Content $errFile -Raw -ErrorAction SilentlyContinue)" }
-          if ($r.status -ne 'ok') { throw "self-test status is '$($r.status)', expected 'ok'" }
-          if ($r.model.sha256_match -ne $true) { throw 'model.sha256_match is not true' }
-          if ($r.model.tensor_validation.output_count -ne 12) { throw "expected 12 YuNet output tensors, got $($r.model.tensor_validation.output_count)" }
-          Write-Host "Self-test OK: $($r | ConvertTo-Json -Compress -Depth 6)"
-
-      - name: F - Tauri release build (NSIS installer)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          npm ci
-          if ($LASTEXITCODE -ne 0) { throw "npm ci failed (exit $LASTEXITCODE)" }
-          npm run tauri build -- --bundles nsis
-          if ($LASTEXITCODE -ne 0) { throw "tauri build failed (exit $LASTEXITCODE)" }
-          $installer = 'src-tauri\target\release\bundle\nsis\photokhan_0.1.0_x64-setup.exe'
-          if (-not (Test-Path $installer)) { throw "NSIS installer not found: $installer" }
-          Write-Host "Installer OK: $installer"
-
-      - name: G1 - dumpbin dependents (no onnxruntime.dll)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $exe = 'src-tauri\target\release\photokhan.exe'
-          if (-not (Test-Path $exe)) { throw "photokhan.exe not found: $exe" }
+          $dll = 'target\release\phk_dll.dll'
+          if (-not (Test-Path $dll)) { throw "inference DLL not found: $dll" }
+          $dllFull = Join-Path $PWD.Path $dll
+          # static ORT check on the DLL itself (dumpbin output kept absolute so it
+          # survives the working-directory).
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           if (-not (Test-Path $vswhere)) { throw 'vswhere.exe not found' }
           $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -362,232 +331,12 @@ jobs:
           $dumpbin = Get-ChildItem -Path (Join-Path $vsPath 'VC\Tools\MSVC') -Recurse -File -Filter 'dumpbin.exe' -ErrorAction SilentlyContinue |
               Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
           if (-not $dumpbin) { throw 'dumpbin.exe not found under VC\Tools\MSVC' }
-          & $dumpbin.FullName /nologo /dependents $exe *> dumpbin.txt
-          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed (exit $LASTEXITCODE)" }
-          $deps = Get-Content dumpbin.txt -Raw
-          if ($deps -match 'onnxruntime\.dll') { throw 'dumpbin output mentions onnxruntime.dll - ORT was linked dynamically, not statically' }
-          Write-Host 'OK: no onnxruntime.dll dependency - static ORT link confirmed'
-
-      - name: G2 - Bundled resources + model SHA-256
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $releaseDir = Join-Path $env:GITHUB_WORKSPACE 'src-tauri\target\release'
-          # Locate the bundled model wherever Tauri actually placed it, derive the
-          # layout from its real location, and require manifest.json + LICENSE beside it.
-          $onnx = Get-ChildItem -Path $releaseDir -Recurse -File -Filter 'face_detection_yunet_2023mar.onnx' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $onnx) { throw "bundled model not found anywhere under $releaseDir" }
-          $onnxDir = $onnx.Directory.FullName
-          $layout = $onnxDir.Substring($releaseDir.Length).TrimStart('\').Replace('\', '/')
-          if (-not $layout) { $layout = 'exe_dir' }
-          foreach ($name in @('manifest.json', 'LICENSE')) {
-              if (-not (Test-Path (Join-Path $onnxDir $name))) { throw "bundled resource missing beside model: $name (in $onnxDir)" }
-          }
-          Write-Host "Resource layout produced by Tauri: $layout ($onnxDir)"
-          Add-Content -Path $env:GITHUB_ENV -Value "PHK_RESOURCE_LAYOUT=$layout"
-          Add-Content -Path $env:GITHUB_ENV -Value "PHK_RESOURCE_DIR=$onnxDir"
-          $hash = (Get-FileHash -Path $onnx.FullName -Algorithm SHA256).Hash
-          Write-Host "model sha256: $hash"
-          if ($hash -ine '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4') {
-              throw "model sha256 mismatch: $hash"
-          }
-          Write-Host 'OK: bundled model SHA-256 matches manifest'
-
-      - name: G3 - Silent install to fixed dir
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $installer = Join-Path $env:GITHUB_WORKSPACE 'src-tauri\target\release\bundle\nsis\photokhan_0.1.0_x64-setup.exe'
-          if (-not (Test-Path $installer)) { throw "installer not found: $installer" }
-          $targetDir = 'C:\phk-ci-install'
-          if (Test-Path $targetDir) { Remove-Item -Path $targetDir -Recurse -Force }
-          $p = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$targetDir" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "installer exit code: $($p.ExitCode)" }
-          if (-not (Test-Path (Join-Path $targetDir 'photokhan.exe'))) { throw 'installed photokhan.exe missing' }
-          # tauri-bundler 2.12.4 installer.nsi writes the uninstaller as uninstall.exe
-          if (-not (Test-Path (Join-Path $targetDir 'uninstall.exe'))) { throw 'installed uninstall.exe missing' }
-          $model = Get-ChildItem -Path $targetDir -Recurse -File -Filter 'face_detection_yunet_2023mar.onnx' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $model) { throw "installed model not found under $targetDir" }
-          foreach ($name in @('manifest.json', 'LICENSE')) {
-              if (-not (Test-Path (Join-Path $model.Directory.FullName $name))) { throw "installed resource missing beside model: $name" }
-          }
-          # Statically-linked third-party licenses must ship: ORT MIT + its notices
-          # (covers RE2, Abseil, ...).
-          $thirdParty = Get-ChildItem -Path $targetDir -Recurse -File -Filter 'ThirdPartyNotices.txt' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $thirdParty) { throw 'installed ThirdPartyNotices.txt not found (statically linked ORT/re2/abseil notices)' }
-          $ortLicense = Get-ChildItem -Path $targetDir -Recurse -File -Filter 'LICENSE-ONNX-Runtime' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $ortLicense) { throw 'installed LICENSE-ONNX-Runtime not found' }
-          $utf8License = Get-ChildItem -Path $targetDir -Recurse -File -Filter 'LICENSE-utf8_range' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $utf8License) { throw 'installed LICENSE-utf8_range not found (newly linked protobuf dependency)' }
-          $hash = (Get-FileHash -Path $model.FullName -Algorithm SHA256).Hash
-          if ($hash -ine '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4') {
-              throw "installed model sha256 mismatch: $hash"
-          }
-          Add-Content -Path $env:GITHUB_ENV -Value "PHK_INSTALLED_MODEL=$($model.FullName)"
-          Write-Host "OK: silent install verified in $targetDir (model at $($model.FullName))"
-
-      - name: G4 - Installed-run inference (fresh temp cwd)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Remove-Item Env:PHOTOKHAN_MODELS_DIR -ErrorAction SilentlyContinue
-          $work = Join-Path $env:TEMP ('phk-selftest-' + [guid]::NewGuid().ToString('N'))
-          New-Item -ItemType Directory -Path $work | Out-Null
-          $outFile = Join-Path $env:GITHUB_WORKSPACE 'installed-selftest.json'
-          $exe = 'C:\phk-ci-install\photokhan.exe'
-          $ruleName = 'phk-ci-block-outbound'
-          # Offline proof: block ALL outbound traffic for the installed exe and run
-          # inference under that rule. Success then demonstrates the model path
-          # makes no network call. The rule is asserted and removed in finally.
-          $mpssvc = Get-Service mpssvc -ErrorAction SilentlyContinue
-          if (-not $mpssvc -or $mpssvc.Status -ne 'Running') { throw 'Windows Defender Firewall service not running - cannot prove offline operation' }
-          $disabledProfiles = Get-NetFirewallProfile | Where-Object { $_.Enabled -ne $true }
-          if ($disabledProfiles) { throw "Firewall profile disabled: $($disabledProfiles.Name -join ', ')" }
-          Remove-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
-          New-NetFirewallRule -Name $ruleName -DisplayName 'phk-ci block outbound' -Direction Outbound -Action Block -Program $exe | Out-Null
-          $rule = Get-NetFirewallRule -Name $ruleName
-          if (-not $rule -or $rule.Enabled -ne 'True' -or $rule.Direction -ne 'Outbound' -or $rule.Action -ne 'Block') {
-              throw "firewall rule not effective: $($rule | ConvertTo-Json -Compress)"
-          }
-          Write-Host "Outbound blocked for $exe (rule $ruleName verified)"
-          Push-Location $work
-          try {
-              $p = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru `
-                  -RedirectStandardOutput $outFile -RedirectStandardError (Join-Path $env:GITHUB_WORKSPACE 'installed-selftest.err.log')
-              if ($p.ExitCode -ne 0) { throw "installed self-test exit code: $($p.ExitCode)" }
-              $r = Get-Content $outFile -Raw | ConvertFrom-Json
-              if (-not $r) { throw "installed self-test produced no JSON" }
-              if ($r.status -ne 'ok') { throw "installed self-test status: '$($r.status)'" }
-              if ($r.resolution.selected -notin @('exe_dir', 'exe_dir/resources', 'exe_dir/models')) { throw "resolution.selected is '$($r.resolution.selected)', expected an exe-relative candidate" }
-              if ($r.model.sha256_match -ne $true) { throw 'installed model.sha256_match is not true' }
-              if ($r.model.tensor_validation.output_count -ne 12) { throw "installed self-test: expected 12 YuNet output tensors, got $($r.model.tensor_validation.output_count)" }
-              Write-Host "Installed self-test OK (offline): $($r | ConvertTo-Json -Compress -Depth 6)"
-              Add-Content -Path $env:GITHUB_ENV -Value 'PHK_OFFLINE_VERIFIED=true'
-          }
-          finally {
-              Remove-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
-              Pop-Location
-          }
-
-      - name: G5 - WebView2 runtime presence (informational)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $guid = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
-          $keys = @(
-              "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$guid",
-              "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$guid",
-              "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$guid"
-          )
-          $present = $false
-          $version = ''
-          foreach ($key in $keys) {
-              if (Test-Path $key) {
-                  $pv = (Get-ItemProperty -Path $key -ErrorAction SilentlyContinue).pv
-                  if ($pv) { $version = [string]$pv }
-                  Write-Host "WebView2 Runtime registry key found: $key (version $version)"
-                  $present = $true
-                  break
-              }
-          }
-          if (-not $present) { Write-Host 'WebView2 Runtime not detected on runner (informational)' }
-          Add-Content -Path $env:GITHUB_ENV -Value "PHK_WEBVIEW2_PRESENT=$($present.ToString().ToLower())"
-          Add-Content -Path $env:GITHUB_ENV -Value "PHK_WEBVIEW2_VERSION=$version"
-
-      - name: G6 - Hash installer, exe, model
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $modelRel = Join-Path $env:PHK_RESOURCE_DIR 'face_detection_yunet_2023mar.onnx'
-          $targets = @(
-              'src-tauri\target\release\bundle\nsis\photokhan_0.1.0_x64-setup.exe',
-              'src-tauri\target\release\photokhan.exe',
-              $modelRel
-          )
-          $lines = @()
-          foreach ($t in $targets) {
-              if (-not (Test-Path $t)) { throw "file missing for hashing: $t" }
-              $lines += ('{0}  {1}' -f (Get-FileHash -Path $t -Algorithm SHA256).Hash, $t)
-          }
-          $lines | Set-Content hashes.txt
-          Get-Content hashes.txt
-
-      - name: G7 - Write report.json
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $dump = Get-Content dumpbin.txt -Raw
-          $apiCount = ([regex]::Matches($dump, 'api-ms-win-[^\s,]+')).Count
-          $dev = Get-Content selftest-dev.json -Raw | ConvertFrom-Json
-          $inst = Get-Content installed-selftest.json -Raw | ConvertFrom-Json
-          $installerSha = (Get-FileHash 'src-tauri\target\release\bundle\nsis\photokhan_0.1.0_x64-setup.exe' -Algorithm SHA256).Hash
-          $exeSha = (Get-FileHash 'src-tauri\target\release\photokhan.exe' -Algorithm SHA256).Hash
-          $modelSha = (Get-FileHash $env:PHK_INSTALLED_MODEL -Algorithm SHA256).Hash
-          $report = [ordered]@{
-              git_ref      = $env:GITHUB_REF
-              git_sha      = $env:GITHUB_SHA
-              run_id       = $env:GITHUB_RUN_ID
-              ort_strategy = 'static'
-              ort_version  = 'v1.31.0'
-              dumpbin = [ordered]@{
-                  onnxruntime_dll_present = ($dump -match 'onnxruntime\.dll')
-                  vcruntime140_present = ($dump -match 'vcruntime140\.dll')
-                  msvcp140_present = ($dump -match 'msvcp140\.dll')
-                  api_ms_win_entries = $apiCount
-              }
-              resource_layout = $env:PHK_RESOURCE_LAYOUT
-              installed_dir = 'C:\phk-ci-install'
-              installed_files = @(Get-ChildItem 'C:\phk-ci-install' -File | ForEach-Object { $_.Name })
-              selftest_dev = [ordered]@{
-                  status = $dev.status
-                  resolution = $dev.resolution.selected
-                  model_sha256_match = $dev.model.sha256_match
-              }
-              selftest_installed = [ordered]@{
-                  status = $inst.status
-                  resolution = $inst.resolution.selected
-                  model_sha256_match = $inst.model.sha256_match
-              }
-              installer_sha256 = $installerSha
-              exe_sha256 = $exeSha
-              model_sha256 = $modelSha
-              webview2 = [ordered]@{
-                  present = ($env:PHK_WEBVIEW2_PRESENT -eq 'true')
-                  version = $env:PHK_WEBVIEW2_VERSION
-              }
-              offline = [ordered]@{
-                  outbound_blocked_and_passed = ($env:PHK_OFFLINE_VERIFIED -eq 'true')
-              }
-          }
-          $report | ConvertTo-Json -Depth 6 | Set-Content report.json
-          Get-Content report.json
-
-      - name: G8 - Inference DLL build + drop-in smoke test
-        working-directory: src-tauri
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # The release profile uses panic=abort, which would make catch_unwind
-          # dead code and a Rust panic would kill the HOST process. Rebuild the
-          # DLL with unwinding so phk_process can contain panics (PHK_ERR_PANIC).
-          $env:RUSTFLAGS = '-C panic=unwind'
-          cargo build --release --lib
-          $rustExit = $LASTEXITCODE
-          Remove-Item Env:RUSTFLAGS
-          if ($rustExit -ne 0) { throw 'DLL unwind build failed' }
-          $dll = 'target\release\photokhan_lib.dll'
-          if (-not (Test-Path $dll)) { throw "inference DLL not found: $dll" }
           $dllDump = Join-Path $env:GITHUB_WORKSPACE 'dll-dumpbin.txt'
-          # static ORT check on the DLL itself
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          $dumpbin = Get-ChildItem -Path (Join-Path $vsPath 'VC\Tools\MSVC') -Recurse -File -Filter 'dumpbin.exe' -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
-          if (-not $dumpbin) { throw 'dumpbin.exe not found' }
-          & $dumpbin.FullName /nologo /dependents $dll *> $dllDump
+          & $dumpbin.FullName /nologo /dependents $dllFull *> $dllDump
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed (exit $LASTEXITCODE)" }
           $dllDeps = Get-Content $dllDump -Raw
-          if ($dllDeps -match 'onnxruntime\.dll') { throw 'photokhan_lib.dll imports onnxruntime.dll - not static' }
-          Write-Host 'OK: photokhan_lib.dll has no onnxruntime.dll dependency (static ORT)'
+          if ($dllDeps -match 'onnxruntime\.dll') { throw 'phk_dll.dll imports onnxruntime.dll - ORT linked dynamically, not statically' }
+          Write-Host 'OK: phk_dll.dll has no onnxruntime.dll dependency (static ORT)'
           # Real-face sample: public-domain astronaut portrait from scikit-image
           # (v0.14.2 pin - the file was removed from newer tags; data/__init__.py
           # in that tag identifies it as public domain).
@@ -612,7 +361,11 @@ jobs:
           # Interop contract: paths are UTF-8. `string`+CharSet.Ansi would use the
           # Windows code page (breaks Vietnamese filenames), and `int` capacity is
           # 32-bit vs Rust usize (64-bit). Use byte[] (NUL-terminated UTF-8) and
-          # UIntPtr.
+          # UIntPtr. The binding loads the DLL at RUNTIME via Init(dllPath)
+          # (LoadLibrary + GetProcAddress into delegates) - NO DllImport path is
+          # baked in, so the shipped phk-dll-smoke.cs works from any location.
+          # Every concatenation is parenthesized - inside @(...) the comma binds
+          # tighter than +, so '...' + $var + '...' must be one element.
           $cs = @(
               'using System;',
               'using System.Runtime.InteropServices;',
@@ -642,6 +395,7 @@ jobs:
               '    public static int phk_last_error(byte[] buf, UIntPtr cap) { return _lastError(buf, cap); }',
               '}'
           ) -join [Environment]::NewLine
+          $csFile = Join-Path $bundle 'phk-dll-smoke.cs'
           Set-Content -Path $csFile -Value $cs
           Add-Type -Path $csFile
           function ToUtf8Z([string]$value) { [Text.Encoding]::UTF8.GetBytes($value + [char]0) }
@@ -669,6 +423,7 @@ jobs:
           $img = [System.Drawing.Image]::FromFile($jpg.FullName)
           $dims = "$($img.Width)x$($img.Height)"
           $img.Dispose()
+          if ($dims -ne '354x472') { throw "unexpected output dimensions: $dims (expected 354x472)" }
           Write-Host "DLL smoke OK (relocated bundle, no env/setter): $($jpg.Name) ($dims), rc=$rc"
           # Restore the bundle into the workspace for upload (upload-artifact only
           # accepts workspace paths). The smoke ran against the MOVED copy, so the
@@ -677,9 +432,67 @@ jobs:
           Move-Item $moved $bundle
           $jpg = Get-ChildItem -Path (Join-Path $bundle 'out') -File -Filter '*.jpg' | Select-Object -First 1
           if (-not $jpg) { throw 'relocated bundle lost its smoke output JPG' }
-          Add-Content -Path $env:GITHUB_ENV -Value 'PHK_DLL_SMOKE_OK=true'
+          # SHA-256: DLL + model + output JPG.
+          $targets = @(
+              (Join-Path $bundle 'phk_dll.dll'),
+              (Join-Path $bundle 'models\face_detection_yunet_2023mar.onnx'),
+              $jpg.FullName
+          )
+          $lines = @()
+          foreach ($t in $targets) {
+              if (-not (Test-Path $t)) { throw "file missing for hashing: $t" }
+              $lines += ('{0}  {1}' -f (Get-FileHash -Path $t -Algorithm SHA256).Hash, $t)
+          }
+          $lines | Set-Content (Join-Path $env:GITHUB_WORKSPACE 'hashes.txt')
+          Get-Content (Join-Path $env:GITHUB_WORKSPACE 'hashes.txt')
+          # report.json (DLL-focused).
+          $dllSha = (Get-FileHash (Join-Path $bundle 'phk_dll.dll') -Algorithm SHA256).Hash
+          $modelSha = (Get-FileHash (Join-Path $bundle 'models\face_detection_yunet_2023mar.onnx') -Algorithm SHA256).Hash
+          $manifest = Get-Content (Join-Path $bundle 'models\manifest.json') -Raw | ConvertFrom-Json
+          $manifestModel = $manifest.models | Where-Object { $_.file -eq 'face_detection_yunet_2023mar.onnx' } | Select-Object -First 1
+          if (-not $manifestModel) { throw 'manifest.json has no entry for face_detection_yunet_2023mar.onnx' }
+          $manifestSha = $manifestModel.sha256
+          if ($modelSha -ine $manifestSha) { throw "model sha256 mismatch vs manifest: $modelSha (manifest: $manifestSha)" }
+          $apiCount = ([regex]::Matches($dllDeps, 'api-ms-win-[^\s,]+')).Count
+          $report = [ordered]@{
+              git_ref      = $env:GITHUB_REF
+              git_sha      = $env:GITHUB_SHA
+              run_id       = $env:GITHUB_RUN_ID
+              ort_strategy = 'static'
+              ort_version  = 'v1.31.0'
+              dll = [ordered]@{
+                  path = 'photokhan-dll-bundle\phk_dll.dll'
+                  sha256 = $dllSha
+              }
+              model = [ordered]@{
+                  sha256 = $modelSha
+                  matches_manifest = $true
+              }
+              dumpbin = [ordered]@{
+                  onnxruntime_dll_present = ($dllDeps -match 'onnxruntime\.dll')
+                  msvcp140_present = ($dllDeps -match 'msvcp140\.dll')
+                  api_ms_win_entries = $apiCount
+              }
+              smoke = [ordered]@{
+                  rc = $rc
+                  output_jpg = $jpg.Name
+                  dimensions = $dims
+                  models_resolution = 'dll_dir'
                   binding = 'init (LoadLibrary/GetProcAddress, no baked DLL path)'
                   bundle_relocated = $true
+              }
+              installer = [ordered]@{
+                  built = $false
+                  note = 'DLL-only pipeline - no Tauri app, no NSIS installer'
+              }
+              webview2 = 'not_applicable'
+              offline = [ordered]@{
+                  verified = $false
+                  note = 'phk_process makes no network calls by design (local model, ORT telemetry disabled); informational only - no firewall-block proof in the DLL pipeline'
+              }
+          }
+          $report | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $env:GITHUB_WORKSPACE 'report.json')
+          Get-Content (Join-Path $env:GITHUB_WORKSPACE 'report.json')
 
       # Stage the ORT build log inside the workspace: upload-artifact@v4 only
       # accepts paths within the workspace.
@@ -694,22 +507,18 @@ jobs:
               Write-Host 'D:\build\ort_build.log not present - skipping (informational)'
           }
 
-      # success() gate + throwing validation steps guarantee the installer is
-      # only uploaded when every assertion passed.
-      - name: H1 - Upload artifacts (photokhan-windows-x64)
+      # success() gate + throwing validation steps guarantee the bundle is only
+      # uploaded when every assertion passed.
+      - name: H1 - Upload artifacts (phk-dll-windows-x64)
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: photokhan-windows-x64
+          name: phk-dll-windows-x64
           path: |
-            src-tauri/target/release/bundle/nsis/photokhan_0.1.0_x64-setup.exe
-            src-tauri/target/release/photokhan_lib.dll
-            report.json
-            dumpbin.txt
+            photokhan-dll-bundle
             dll-dumpbin.txt
+            report.json
             hashes.txt
-            selftest-dev.json
-            installed-selftest.json
 
       - name: H2 - Upload diagnostics (windows-build-diagnostics)
         if: always()
@@ -719,9 +528,6 @@ jobs:
           if-no-files-found: warn
           path: |
             report.json
-            dumpbin.txt
             dll-dumpbin.txt
             hashes.txt
-            selftest-dev.json
-            installed-selftest.json
             ort_build.log
