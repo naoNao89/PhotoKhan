@@ -126,20 +126,36 @@ jobs:
               exit 0
           }
           # ort-sys 2.0.0-rc.15 unconditionally links static re2 from this path.
-          # ORT 1.31.0 pins google/re2 @ 2024-07-02 (cmake/deps.txt) but does not
-          # produce the lib in this layout, so build the pinned tag ourselves with
-          # the same MSVC toolchain / Release / MD config the ORT build uses.
+          # ORT 1.31.0 pins google/re2 @ 2024-07-02 (cmake/deps.txt) but its
+          # FetchContent re2 (EXCLUDE_FROM_ALL) is never built by the MSVC build.
+          # re2 2024-07-02 requires abseil (find_package(absl) unless absl::base
+          # exists), so build it in a wrapper project that add_subdirectory's the
+          # abseil-cpp source ORT already downloaded (_deps\abseil_cpp-src, the
+          # exact 20250814.0 pin) - same toolchain, Release, /MD as the ORT build.
           $re2Root = 'D:\build\re2'
           $src = Join-Path $re2Root 're2-2024-07-02'
           $build = Join-Path $re2Root 'build'
+          $abslSrc = 'D:\build\onnxruntime\build\Windows\Release\_deps\abseil_cpp-src'
           if (-not (Test-Path $src)) {
               New-Item -ItemType Directory -Force -Path $re2Root | Out-Null
               & git clone --depth 1 --branch 2024-07-02 https://github.com/google/re2.git $src
               if ($LASTEXITCODE -ne 0) { throw "re2 clone failed (exit $LASTEXITCODE)" }
           }
-          cmake -S $src -B $build -G 'Visual Studio 17 2022' -A x64 -DCMAKE_BUILD_TYPE=Release -DRE2_BUILD_TESTING=OFF
+          if (-not (Test-Path $abslSrc)) { throw "abseil_cpp-src not found at $abslSrc (ORT build must run first)" }
+          $wrapper = @(
+              'cmake_minimum_required(VERSION 3.20)',
+              'project(re2_bootstrap CXX)',
+              '# re2 2024-07-02 requires abseil: provide it from ORT\'s own abseil-cpp source',
+              '# (same tag as ORT\'s cmake/deps.txt) before adding re2.',
+              'add_subdirectory(${ABSL_SRC} absl)',
+              'add_subdirectory(${RE2_SRC} re2)'
+          ) -join [Environment]::NewLine
+          Set-Content -Path (Join-Path $re2Root 'CMakeLists.txt') -Value $wrapper
+          cmake -S $re2Root -B $build -G 'Visual Studio 17 2022' -A x64 `
+            -DCMAKE_BUILD_TYPE=Release -DRE2_BUILD_TESTING=OFF `
+            -DABSL_SRC=$abslSrc -DRE2_SRC=$src
           if ($LASTEXITCODE -ne 0) { throw "re2 cmake configure failed (exit $LASTEXITCODE)" }
-          cmake --build $build --config Release --parallel
+          cmake --build $build --config Release --parallel --target re2
           if ($LASTEXITCODE -ne 0) { throw "re2 build failed (exit $LASTEXITCODE)" }
           $re2Lib = Join-Path $build 'Release\re2.lib'
           if (-not (Test-Path $re2Lib)) { throw "re2.lib not produced at $re2Lib" }
