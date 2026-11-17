@@ -1,0 +1,25 @@
+[package]
+name = "phk-dll"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92.0"
+description = "PhotoKhan standalone inference DLL: input photo -> ID-photo JPG (YuNet + static ONNX Runtime)"
+
+[lib]
+name = "phk_dll"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ort = "=2.0.0-rc.15"
+image = "0.25.10"
+sha2 = "0.11.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Standalone DLL: keep default unwinding so catch_unwind can contain Rust panics
+# (the Tauri app profile uses panic=abort; this crate deliberately does NOT).
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true

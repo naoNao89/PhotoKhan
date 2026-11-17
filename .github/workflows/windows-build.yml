@@ -294,7 +294,7 @@ jobs:
       # Explicit save (not the default post hook): actions/cache@v4 skips its
       # post-save whenever the job fails, which would burn a full ORT rebuild on
       # every iteration. Save runs right after the ORT stage, so later failures
-      # (Rust/tests/installer) still leave a reusable tree.
+      # (Rust/tests) still leave a reusable tree.
       - name: C3b - Save ONNX Runtime tree (only on restore miss)
         if: steps.C1.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -594,8 +594,21 @@ jobs:
           $sample = Join-Path $env:GITHUB_WORKSPACE 'astronaut.png'
           Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/scikit-image/scikit-image/v0.14.2/skimage/data/astronaut.png' -OutFile $sample -UseBasicParsing
           if (-not (Test-Path $sample)) { throw 'failed to download astronaut.png sample' }
-          $csFile = Join-Path $env:GITHUB_WORKSPACE 'phk-dll-smoke.cs'
-          $dllAbs = (Join-Path $env:GITHUB_WORKSPACE 'src-tauri\target\release\photokhan_lib.dll').Replace('\', '\\')
+          # Stage a SELF-CONTAINED bundle: DLL + committed models + licenses + the
+          # P/Invoke binding. The DLL crate ships NO tauri resources - the models
+          # live at the repo root (models/), so they are copied from the checkout.
+          # Smoke with NO env override and NO setter, so the DLL must resolve
+          # models from its own directory (bundle contract).
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'photokhan-dll-bundle'
+          if (Test-Path $bundle) { Remove-Item $bundle -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'models') | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'licenses') | Out-Null
+          Copy-Item $dllFull (Join-Path $bundle 'phk_dll.dll') -Force
+          foreach ($f in @('manifest.json', 'face_detection_yunet_2023mar.onnx', 'LICENSE')) {
+              Copy-Item (Join-Path $env:GITHUB_WORKSPACE "models\$f") (Join-Path $bundle "models\$f") -Force
+          }
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'licenses\*') (Join-Path $bundle 'licenses\') -Force
+          Remove-Item Env:PHOTOKHAN_MODELS_DIR -ErrorAction SilentlyContinue
           # Interop contract: paths are UTF-8. `string`+CharSet.Ansi would use the
           # Windows code page (breaks Vietnamese filenames), and `int` capacity is
           # 32-bit vs Rust usize (64-bit). Use byte[] (NUL-terminated UTF-8) and
@@ -605,24 +618,43 @@ jobs:
               'using System.Runtime.InteropServices;',
               'using System.Text;',
               'public static class PhkDll {',
-              ('    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl)]'),
-              '    public static extern int phk_set_models_dir(byte[] dir);',
-              ('    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl)]'),
-              '    public static extern int phk_process(byte[] input, byte[] outputDir);',
-              ('    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl)]'),
-              '    public static extern int phk_last_error(byte[] buf, UIntPtr cap);',
+              '    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]',
+              '    private static extern IntPtr LoadLibrary(string lpFileName);',
+              '    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]',
+              '    private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);',
+              '    private delegate int SetModelsDirFn(byte[] dir);',
+              '    private delegate int ProcessFn(byte[] input, byte[] outputDir);',
+              '    private delegate int LastErrorFn(byte[] buf, UIntPtr cap);',
+              '    private static SetModelsDirFn _setModelsDir;',
+              '    private static ProcessFn _process;',
+              '    private static LastErrorFn _lastError;',
+              '    public static void Init(string dllPath) {',
+              '        IntPtr h = LoadLibrary(dllPath);',
+              '        if (h == IntPtr.Zero) {',
+              '            throw new InvalidOperationException("LoadLibrary failed: " + dllPath + " (Win32 error " + Marshal.GetLastWin32Error() + ")");',
+              '        }',
+              '        _setModelsDir = (SetModelsDirFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_set_models_dir"), typeof(SetModelsDirFn));',
+              '        _process = (ProcessFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_process"), typeof(ProcessFn));',
+              '        _lastError = (LastErrorFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_last_error"), typeof(LastErrorFn));',
+              '    }',
+              '    public static int phk_set_models_dir(byte[] dir) { return _setModelsDir(dir); }',
+              '    public static int phk_process(byte[] input, byte[] outputDir) { return _process(input, outputDir); }',
+              '    public static int phk_last_error(byte[] buf, UIntPtr cap) { return _lastError(buf, cap); }',
               '}'
           ) -join [Environment]::NewLine
           Set-Content -Path $csFile -Value $cs
           Add-Type -Path $csFile
           function ToUtf8Z([string]$value) { [Text.Encoding]::UTF8.GetBytes($value + [char]0) }
-          $env:PHOTOKHAN_MODELS_DIR = "$env:GITHUB_WORKSPACE\models"
-          $outDir = Join-Path $env:GITHUB_WORKSPACE 'dll-out'
+          # Relocate the bundle to a fresh temp dir and smoke it THERE: the shipped
+          # caller must work against a MOVED bundle, with models resolved from the
+          # DLL own directory (no env, no setter, no baked paths).
+          $moved = Join-Path $env:TEMP ('phk-bundle-' + [guid]::NewGuid().ToString('N'))
+          Move-Item $bundle $moved
+          [PhkDll]::Init((Join-Path $moved 'phk_dll.dll'))
+          $outDir = Join-Path $moved 'out'
           if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
-          $rc = [PhkDll]::phk_set_models_dir((ToUtf8Z "$env:GITHUB_WORKSPACE\models"))
-          if ($rc -ne 0) { throw "phk_set_models_dir failed (rc $rc)" }
           # UTF-8 path exercise: Vietnamese filename (codepage marshalling would break this).
-          $viet = Join-Path $env:GITHUB_WORKSPACE 'ảnh chân dung.png'
+          $viet = Join-Path $moved 'ảnh chân dung.png'
           Copy-Item $sample $viet -Force
           $rc = [PhkDll]::phk_process((ToUtf8Z $viet), (ToUtf8Z $outDir))
           if ($rc -ne 0) {
@@ -637,8 +669,17 @@ jobs:
           $img = [System.Drawing.Image]::FromFile($jpg.FullName)
           $dims = "$($img.Width)x$($img.Height)"
           $img.Dispose()
-          Write-Host "DLL smoke OK: $($jpg.Name) ($dims), rc=$rc"
+          Write-Host "DLL smoke OK (relocated bundle, no env/setter): $($jpg.Name) ($dims), rc=$rc"
+          # Restore the bundle into the workspace for upload (upload-artifact only
+          # accepts workspace paths). The smoke ran against the MOVED copy, so the
+          # uploaded bundle is exactly the verified, relocated content.
+          if (Test-Path $bundle) { Remove-Item $bundle -Recurse -Force -ErrorAction SilentlyContinue }
+          Move-Item $moved $bundle
+          $jpg = Get-ChildItem -Path (Join-Path $bundle 'out') -File -Filter '*.jpg' | Select-Object -First 1
+          if (-not $jpg) { throw 'relocated bundle lost its smoke output JPG' }
           Add-Content -Path $env:GITHUB_ENV -Value 'PHK_DLL_SMOKE_OK=true'
+                  binding = 'init (LoadLibrary/GetProcAddress, no baked DLL path)'
+                  bundle_relocated = $true
 
       # Stage the ORT build log inside the workspace: upload-artifact@v4 only
       # accepts paths within the workspace.

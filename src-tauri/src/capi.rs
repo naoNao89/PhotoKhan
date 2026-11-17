@@ -1,12 +1,15 @@
 //! C-ABI exports for the Windows inference DLL (`photokhan_lib.dll`).
 //!
 //! Drop-in contract: `phk_process("anh.jpg", "out/")` → writes an ID-photo JPG
-//! (preset 3×4, white background, head straightened) into `out/`.
+//! (preset 3×4, crop/alignment với padding trắng cho vùng ngoài ảnh gốc — chưa có
+//! tách nền) vào `out/`.
 //!
 //! Thư mục model được giải quyết theo thứ tự:
 //!   1. `phk_set_models_dir` (đặt từ host)
 //!   2. biến môi trường `PHOTOKHAN_MODELS_DIR`
-//!   3. `<thư mục host exe>\models`
+//!   3. `<thư mục DLL>\models` (bundle tự chứa — `current_exe()` là HOST exe nên
+//!      phải lấy đường dẫn DLL qua GetModuleHandleExW/GetModuleFileNameW)
+//!   4. `<thư mục host exe>\models`
 //!
 //! Mọi hàm đều không panicked ra ngoài biên giới FFI (catch_unwind).
 
@@ -45,8 +48,50 @@ fn cstr_to_path(ptr: *const c_char) -> Option<PathBuf> {
     Some(PathBuf::from(text))
 }
 
-/// Thư mục model: override → env → `<exe>\models`. Chỉ chấp nhận thư mục có
-/// `manifest.json` để `ModelStore` xác minh SHA-256 sau đó.
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetModuleHandleExW(
+        flags: u32,
+        module_name: *const u16,
+        module: *mut *mut core::ffi::c_void,
+    ) -> i32;
+    fn GetModuleFileNameW(module: *mut core::ffi::c_void, filename: *mut u16, size: u32) -> u32;
+}
+
+const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x4;
+const GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT: u32 = 0x2;
+
+/// Điểm mốc để lấy handle của chính DLL (FROM_ADDRESS).
+#[inline(never)]
+fn module_marker() {}
+
+/// Thư mục chứa chính DLL (không phải host exe). `current_exe()` trả về host
+/// khi DLL được load bởi tiến trình khác, nên lấy qua kernel32.
+fn dll_dir() -> Option<PathBuf> {
+    unsafe {
+        let mut handle: *mut core::ffi::c_void = core::ptr::null_mut();
+        let marker_addr = module_marker as *const () as *const u16;
+        if GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            marker_addr,
+            &mut handle,
+        ) == 0
+        {
+            return None;
+        }
+        let mut buffer = [0_u16; 4096];
+        let len = GetModuleFileNameW(handle, buffer.as_mut_ptr(), buffer.len() as u32);
+        if len == 0 {
+            return None;
+        }
+        let wide = &buffer[..len as usize];
+        let path = String::from_utf16(wide).ok()?;
+        Path::new(&path).parent().map(Path::to_path_buf)
+    }
+}
+
+/// Thư mục model: override → env → `<DLL dir>\models` → `<host exe>\models`.
+/// Chỉ chấp nhận thư mục có `manifest.json` để `ModelStore` xác minh SHA-256 sau đó.
 fn models_dir() -> AppResult<PathBuf> {
     let candidates: Vec<PathBuf> = {
         let mut list = Vec::new();
@@ -57,6 +102,9 @@ fn models_dir() -> AppResult<PathBuf> {
         }
         if let Some(dir) = std::env::var_os("PHOTOKHAN_MODELS_DIR") {
             list.push(PathBuf::from(dir));
+        }
+        if let Some(dir) = dll_dir() {
+            list.push(dir.join("models"));
         }
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {

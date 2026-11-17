@@ -1,165 +1,133 @@
-# Windows build: static ONNX Runtime + NSIS installer
+# Windows build: static ONNX Runtime inference DLL (`phk_dll.dll`)
 
 ## 1. Purpose & scope
 
-PhotoKhan is a Tauri 2 + Rust desktop app targeting **Windows 10 x64**, CPU-only. The Windows CI build produces a single NSIS installer with ONNX Runtime **statically linked** into `photokhan.exe`, runs inference smoke tests against the bundled YuNet face-detection model, validates the installer by installing it silently and running the installed app, and uploads the artifacts.
+PhotoKhan's Windows CI builds one standalone x64 inference DLL, `phk_dll.dll`, from the `dll/` crate (package `phk-dll`). The pipeline ships **no Tauri app and no NSIS installer** — the deliverable is a self-contained DLL bundle (section 4).
+
+The DLL's contract: **input photo → ID-photo JPG**, preset 3×4 (354×472) — crop/alignment with white padding for the area outside the original image. **No background removal** (a later milestone). Face detection uses the YuNet model (`face_detection_yunet_2023mar.onnx`); inference runs on **statically linked ONNX Runtime**.
 
 Scope:
 
 - Windows 10 x64 runtime (built on `windows-2022` runners).
 - CPU-only inference (no GPU execution providers).
-- Offline operation: model, manifest and license ship inside the installer; nothing is downloaded at first run.
+- Offline operation: model, manifest and licenses ship inside the bundle; nothing is downloaded at runtime.
 - ONNX Runtime v1.31.0 built from source as static libraries (baseline CPU, **no AVX/AVX2/AVX512 compile flags**).
 
-## 2. Architecture decisions
+## 2. Architecture
 
 - **Static ONNX Runtime v1.31.0, built from source.** `build_ort_baseline.ps1` clones `microsoft/onnxruntime` at tag `v1.31.0` and builds Release static libs with `onnxruntime_BUILD_UNIT_TESTS=OFF`, passing **no** `onnxruntime_USE_AVX*` defines (they default to OFF). After the build it verifies in `CMakeCache.txt` that `onnxruntime_USE_AVX/AVX2/AVX512` are all `=OFF` and refuses to continue otherwise. Reasons:
   - **Older CPU intent**: no compile-time AVX flags keeps the build at the compiler baseline (MLAS still dispatches to SIMD at runtime behind CPUID checks). Actual support on CPUs without AVX2/AVX512 is UNVERIFIED — it needs a real hardware test (see the evidence table; the runner CPU has AVX2).
-  - **No DLL shipping**: no `onnxruntime.dll` beside the exe, no version-skew between app and runtime.
-  - **ort-sys link contract**: `ort` 2.0.0-rc.15 statically links when `ORT_LIB_PATH` points at the directory containing `Release\` (the `onnxruntime_*.lib` files) and `_deps\` (protobuf/onnx/nsync/cpuinfo/clog build trees), `ORT_LIB_PROFILE=Release`, and `ORT_PREFER_DYNAMIC_LINK=0`. `ORT_SKIP_DOWNLOAD=1` makes a misconfigured build **fail at link time** instead of silently downloading the prebuilt DLL.
-- **Model, manifest and license ship as Tauri resources** (`bundle.resources` map form: `{ "../models/": "models/", "../licenses/": "licenses/" }` in `tauri.conf.json`). Tauri rewrites parent-traversal in *array* resource entries to `_up_` (`../models/...` would land in `_up_\models\`), so the map form is used to place the files under `models\` and `licenses\`. On Windows Tauri v2's `resource_dir` is the exe directory, so the installer ships `manifest.json`, `face_detection_yunet_2023mar.onnx` and `LICENSE` (YuNet MIT) under `<install>\models\`, plus `LICENSE-ONNX-Runtime` and `ThirdPartyNotices.txt` (ORT MIT + RE2/Abseil notices) under `<install>\licenses\`, matching the app's existing `beside_executable()` convention (`<exe>\models`). The app's ModelStore SHA-256 verification is unchanged; the CI asserts the bundled model hash matches `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4`.
-- **WebView2**: `webviewInstallMode = embedBootstrapper` — the installer bootstraps the WebView2 Runtime if missing (WebView2 is preinstalled on `windows-2022` runners; presence is recorded in `report.json` as informational).
-- **NSIS `currentUser`**: per-user install, no admin elevation required.
+  - **No DLL shipping**: no `onnxruntime.dll` beside the host, no version-skew between the runtime and the DLL.
+- **`EXCLUDE_FROM_ALL` bootstraps.** ORT's MSVC build never compiles its `EXCLUDE_FROM_ALL` subprojects, which would leave unresolved externals at the Rust link. The workflow builds them explicitly and stages the archives at the paths ort-sys probes:
+  - **re2** (`C2b`): `google/re2 @ 2024-07-02` (ORT's `cmake/deps.txt` pin), built in a wrapper project that `add_subdirectory`s the abseil-cpp source ORT already downloaded (`_deps\abseil_cpp-src`, tag `20250814.0` — re2 2024-07-02 requires abseil), same MSVC Release `/MD` configuration; `re2.lib` is copied to `_deps\re2-build\Release\re2.lib`. Idempotent (skipped when the lib exists) and inside the cached tree.
+  - **model_package + utf8_range** (`C2c`): `onnxruntime_session` globs `core/session/model_package/*.cc` and links the standalone model_package subproject; protobuf's `utf8_range`/`utf8_validity` are needed by libprotobuf-lite. Both are built explicitly (`cmake --build --target`) and the archives staged under the ORT build tree.
+  - **C3 guard**: asserts `onnxruntime_common.lib`, `re2.lib`, `absl_base.lib`, `model_package.lib`, `utf8_range.lib`, `utf8_validity.lib` and the `_deps\protobuf-build` tree all exist before the Rust link.
+- **`dll/` crate = `phk-dll`, cdylib `phk_dll.dll`** (also `rlib` for unit tests). Pinned dependencies: `ort = "=2.0.0-rc.15"`, `image 0.25.10`, `sha2 0.11.1`.
+- **ort-sys static-link contract**: `ORT_LIB_PATH` must point at the directory containing `Release\` (the `onnxruntime_*.lib` files) and `_deps\` (protobuf/onnx/nsync/cpuinfo/clog build trees); `ORT_LIB_PROFILE=Release`; `ORT_PREFER_DYNAMIC_LINK=0`; `ORT_SKIP_DOWNLOAD=1` makes a misconfigured build **fail at link time** instead of silently downloading the prebuilt DLL.
+- **Default unwinding**: the `dll/` crate release profile deliberately keeps Rust's **default `panic=unwind`** (the old Tauri app profile used `panic=abort`). Every export wraps its work in `catch_unwind`, so a Rust panic is contained and returned as `PHK_ERR_PANIC` (5) instead of terminating the host process. No `RUSTFLAGS` override is needed in CI.
+- **No `onnxruntime.dll`**: static linking embeds the ORT/re2/abseil/protobuf archives into `phk_dll.dll`; CI runs `dumpbin /dependents` and fails if `onnxruntime.dll` appears.
+- **Model resolution inside the DLL**: `phk_set_models_dir` override → env `PHOTOKHAN_MODELS_DIR` → `<DLL dir>\models` → `<host exe>\models`. The `<DLL dir>` candidate is resolved via `GetModuleHandleExW`/`GetModuleFileNameW` (`current_exe()` returns the HOST exe when the DLL is loaded by another process). The first candidate whose directory contains `manifest.json` wins; the model's SHA-256 is then verified against the manifest (`E004` on mismatch).
 
-## 3. Local Windows reproduction
-
-Prerequisites:
-
-- Visual Studio 2022 with the **Desktop development with C++** workload (MSVC, vswhere).
-- CMake >= 3.28 (ONNX Runtime requires it; `cmake/CMakeLists.txt:6`).
-- Python >= 3.8, git, Node 22 + npm.
-
-Steps:
-
-1. Build ONNX Runtime once (30–90 min):
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File build_ort_baseline.ps1 `
-     -BuildRoot D:\build -RepoDir D:\build\onnxruntime `
-     -LogPath D:\build\ort_build.log -SkipDumpbin
-   ```
-
-   The script prints `ORT_LIB_PATH -> D:\build\onnxruntime\build\Windows\Release` when done.
-
-2. Point ort-sys at the static tree — either set the environment (a `cmd` session / user env):
-
-   ```powershell
-   $env:ORT_LIB_PATH = 'D:\build\onnxruntime\build\Windows\Release'
-   $env:ORT_LIB_PROFILE = 'Release'
-   $env:ORT_PREFER_DYNAMIC_LINK = '0'
-   $env:ORT_SKIP_DOWNLOAD = '1'
-   ```
-
-   or use a `.cargo/config.toml` `[env]` block mirroring the CI variables (a local example is below; `.cargo/` is git-ignored, so this file stays machine-local):
-
-   ```toml
-   [env]
-   ORT_LIB_PATH = 'D:\build\onnxruntime\build\Windows\Release'
-   ORT_LIB_PROFILE = 'Release'
-   ORT_PREFER_DYNAMIC_LINK = '0'
-   ORT_SKIP_DOWNLOAD = '1'
-   ```
-
-3. Build and test the Rust side:
-
-   ```powershell
-   cd src-tauri
-   cargo test --lib
-   cargo build --release
-   ```
-
-4. Build the NSIS installer (from the repo root — `npm` needs the lockfile there):
-
-   ```powershell
-   npm ci
-   npm run tauri build -- --bundles nsis
-   # -> src-tauri\target\release\bundle\nsis\photokhan_0.1.0_x64-setup.exe
-   ```
-
-5. Smoke-test inference (dev context):
-
-   ```powershell
-   $env:PHOTOKHAN_MODELS_DIR = "$PWD\models"
-   .\src-tauri\target\release\photokhan.exe --self-test
-   ```
-
-   Exit code 0 and `"status":"ok"` mean the model loaded, its SHA-256 verified, and YuNet ran a synthetic 640×640 inference.
-
-## 4. CI reproduction
-
-- Triggers: `workflow_dispatch`, or push / pull_request against `main`.
-- The ONNX Runtime **source clone + build tree** at `D:\build\onnxruntime` (git clone at `v1.31.0`, `build\Windows\Release` libs, `_deps` externals) is cached with key `ort-win-static-1.31.0-<sha256 of build_ort_baseline.ps1>` (restore key `ort-win-static-1.31.0-`). The whole tree is cached because the script refuses to run when the directory exists without `.git`, and the CMakeCache bakes in absolute source paths. Restore and save are **separate steps**: the save runs right after the ORT stage (not the default post hook, which `actions/cache` skips whenever the job fails), so a failure later in the job still leaves the tree reusable. The first run builds ORT from scratch (~40 min); warm runs re-run `build.bat` incrementally against the restored tree (clone reuse + msbuild up-to-date).
-- Job env mirrors the local variables: `ORT_LIB_PATH`, `ORT_LIB_PROFILE=Release`, `ORT_PREFER_DYNAMIC_LINK=0`, `ORT_SKIP_DOWNLOAD=1`, `RUST_BACKTRACE=1`.
-- All validation steps throw on failure — the job fails on any missing required artifact; the installer is uploaded only when every assertion passed.
-
-## 5. Verification evidence
-
-| Claim | Status |
-|---|---|
-| Build on windows-2022 runner | VERIFIED-BY-CI-RUN |
-| Inference on runner (dev context) | VERIFIED-BY-CI-RUN |
-| Installer + installed-run inference | VERIFIED-BY-CI-RUN |
-| Windows 10 runtime | UNVERIFIED (needs real Win10 hardware) |
-| Older CPU / no-AVX2 | UNVERIFIED (baseline ORT build has no compile-time AVX flags; runtime-dispatch + real-hardware test still required) |
-| WebView2 on Windows 10 | UNVERIFIED-on-target |
-
-Update the status column after a CI run. The `windows-2022` runner evidence (build, dev-context inference, silent install + installed-run inference) comes from the `photokhan-windows-x64` artifact of the run; Windows 10 and no-AVX2 claims need a real Windows 10 machine without AVX2.
-
-## 6. Artifacts
-
-Uploaded by `windows-build.yml` (artifact `photokhan-windows-x64` on success; `windows-build-diagnostics` always):
-
-- `src-tauri/target/release/bundle/nsis/photokhan_0.1.0_x64-setup.exe` — the NSIS installer (never uploaded when validation failed).
-- `report.json` — single JSON object: git ref/sha, run id, ORT strategy (`static`, v1.31.0), dumpbin summary (no `onnxruntime.dll`; `vcruntime140.dll` / `msvcp140.dll` / `api-ms-win-*` entries), Tauri resource layout actually produced (`models` expected; fallbacks `resources\models`, `exe_dir`, `resources`), installed-dir file list, dev + installed self-test results (status, resolution, model hash match), installer/exe/model SHA-256, WebView2 presence.
-- `dumpbin.txt` — `/dependents` output for the built `photokhan.exe`.
-- `hashes.txt` — SHA-256 of installer, exe and model.
-- `selftest-dev.json`, `installed-selftest.json` — the two self-test JSON documents.
-- `ort_build.log` (diagnostics only) — the ORT build transcript from `D:\build`.
-
-- `photokhan_lib.dll` — the C-ABI inference DLL (drop-in: input photo → ID-photo JPG), same static ORT + model verification as the app.
-
-## 7. Inference DLL (`photokhan_lib.dll`)
+## 3. DLL contract
 
 Exports (C ABI, cdecl, UTF-8 paths):
 
 | Export | Contract |
 |---|---|
-| `int phk_set_models_dir(const char* dir)` | 0 ok; sets the models dir (must contain `manifest.json` + the `.onnx`). |
-| `int phk_process(const char* input, const char* outputDir)` | 0 = wrote an ID-photo JPG (preset 3×4, white bg, head straightened) into `outputDir`; 1 = bad args; 2 = model missing/verify failed; 3 = image unreadable / no face (E002) / multiple faces (E003); 4 = pipeline/IO; 5 = panic caught. |
-| `int phk_last_error(char* buf, int cap)` | Copies the last error (UTF-8, empty on success) into `buf`; returns the needed size. |
+| `int phk_set_models_dir(const char* dir)` | 0 ok; sets the models dir (must contain `manifest.json` + the `.onnx`). 1 bad/empty path; 4 internal failure. |
+| `int phk_process(const char* input, const char* outputDir)` | 0 = wrote an ID-photo JPG (preset 3×4, white padding, head straightened) into `outputDir`; 1 = bad args; 2 = model missing/verify failed; 3 = input problem (E001/E002/E003); 4 = pipeline/IO; 5 = panic caught. |
+| `int phk_last_error(char* buf, usize cap)` | Copies the last error (UTF-8, empty after a successful call) into `buf`, always NUL-terminated; returns the needed size **including the NUL** — if it exceeds `cap`, call again with a larger buffer. |
 
-Model dir resolution: `phk_set_models_dir` → env `PHOTOKHAN_MODELS_DIR` → `<host-exe>\models`. The DLL ships the same statically-linked ORT (no `onnxruntime.dll`; dumpbin-verified in CI, see `dll-dumpbin.txt`).
+Return codes and error mapping:
 
-Interop contract:
-- Paths are **UTF-8** — marshal them as NUL-terminated `byte[]` (do NOT use `CharSet.Ansi`; it uses the Windows code page and breaks Vietnamese filenames). CI G8 exercises a `ảnh chân dung.png` input.
+| rc | Meaning | Last error |
+|---|---|---|
+| 0 | OK | *(empty)* |
+| 1 | `PHK_ERR_ARGS` — null/invalid path argument | message |
+| 2 | `PHK_ERR_MODEL` — models dir not found, or model verify failed | `E004: ...` |
+| 3 | `PHK_ERR_INPUT` — image unreadable/unsupported (`E001`), no face (`E002`), multiple faces (`E003`) | `E001/E002/E003: ...` |
+| 4 | `PHK_ERR_PROCESS` — pipeline/IO failure | `E005–E007: ...` |
+| 5 | `PHK_ERR_PANIC` — Rust panic caught at the FFI boundary | `phk_process: panic caught inside DLL` |
+
+Model resolution order: `phk_set_models_dir` → env `PHOTOKHAN_MODELS_DIR` → `<DLL dir>\models` → `<host exe>\models`; the first candidate containing `manifest.json` wins, then `ModelStore` verifies the model SHA-256 (mismatch → `E004` → rc 2).
+
+Interop contract (host-side):
+
+- Paths are **UTF-8** — marshal them as NUL-terminated `byte[]` (do **NOT** use `CharSet.Ansi`; it uses the Windows code page and breaks Vietnamese filenames). CI smoke exercises an `ảnh chân dung.png` input.
 - `phk_last_error`'s capacity is Rust `usize` (64-bit) — pass `UIntPtr`, not `int`; decode the buffer as UTF-8 up to the NUL.
-- The DLL is built with `panic=unwind` (CI overrides the release `panic=abort`), so Rust panics are contained and returned as `PHK_ERR_PANIC` (5) instead of terminating the host. The `.exe` keeps `panic=abort`.
+- The DLL is x64 and imports MSVCP140 (VC++ redistributable required on the target — see section 6).
 
-PowerShell example:
+## 4. Self-contained bundle
 
-```powershell
-Add-Type -Path phk-dll-smoke.cs          # DllImport the three exports (byte[] + UIntPtr)
-function ToUtf8Z([string]$v) { [Text.Encoding]::UTF8.GetBytes($v + [char]0) }
-[PhkDll]::phk_set_models_dir((ToUtf8Z "$PWD\models"))
-$rc = [PhkDll]::phk_process((ToUtf8Z "photo.jpg"), (ToUtf8Z "out"))
-if ($rc -ne 0) { $b = New-Object byte[] 1024; [PhkDll]::phk_last_error($b, [UIntPtr]::new(1024)) | Out-Null; [Text.Encoding]::UTF8.GetString($b).TrimEnd([char]0) }
+CI stages and uploads `photokhan-dll-bundle` (artifact `phk-dll-windows-x64`):
+
+```
+photokhan-dll-bundle/
+├── phk_dll.dll                # the inference DLL (static ORT)
+├── models/
+│   ├── manifest.json          # from the repo root models/ (committed)
+│   ├── face_detection_yunet_2023mar.onnx
+│   └── LICENSE                # YuNet MIT
+├── licenses/
+│   ├── LICENSE-ONNX-Runtime
+│   ├── ThirdPartyNotices.txt
+│   └── LICENSE-utf8_range
+├── phk-dll-smoke.cs           # C# binding: PhkDll.Init(dllPath) - LoadLibrary + GetProcAddress (byte[] + UIntPtr)
+└── out/                       # CI smoke output (astronaut.jpg, 354×472)
 ```
 
-CI G8 proves it end-to-end on a real face photo (public-domain astronaut portrait): downloads the sample, P/Invokes `phk_process`, asserts a valid 354×472 JPG is written. Host prerequisites: same MSVCP140 (VC++ redist) note as the exe; the DLL is `x64`.
+Because the DLL resolves models from its own directory (`<DLL dir>\models`), the bundle is fully self-contained: drop it anywhere, call `phk_process` with nothing configured, and the model is found beside the DLL. CI proves exactly this — it **moves the bundle to a fresh temp directory**, calls `phk_process` with **no `PHOTOKHAN_MODELS_DIR` and no `phk_set_models_dir`**, and asserts the output (section 5).
 
-## 8. Licenses
-- **YuNet** face detection model — MIT, Shiqi Yu; the model's license text ships as `models/LICENSE` inside the installer.
+PowerShell usage (the bundle's `phk-dll-smoke.cs` is the binding; it loads the DLL **at runtime** — `Init(dllPath)` uses `LoadLibrary` + `GetProcAddress` into delegates, so **no CI path is baked in** and the example works from any location):
+
+```powershell
+Add-Type -Path photokhan-dll-bundle\phk-dll-smoke.cs
+[PhkDll]::Init("$PWD\photokhan-dll-bundle\phk_dll.dll")
+function ToUtf8Z([string]$v) { [Text.Encoding]::UTF8.GetBytes($v + [char]0) }
+$rc = [PhkDll]::phk_process((ToUtf8Z "photo.jpg"), (ToUtf8Z "out"))
+if ($rc -ne 0) {
+    $b = New-Object byte[] 1024
+    [PhkDll]::phk_last_error($b, [UIntPtr]::new(1024)) | Out-Null
+    [Text.Encoding]::UTF8.GetString($b).TrimEnd([char]0)
+}
+```
+
+## 5. CI reproduction
+
+- Triggers: `workflow_dispatch`, or push / pull_request against `main`. `permissions: contents: read`; concurrency keyed on `github.ref` (cancel-in-progress).
+- Job env mirrors the local variables: `ORT_LIB_PATH`, `ORT_LIB_PROFILE=Release`, `ORT_PREFER_DYNAMIC_LINK=0`, `ORT_SKIP_DOWNLOAD=1`, `RUST_BACKTRACE=1`.
+- **Warm ORT cache**: the whole source clone + build tree at `D:\build\onnxruntime` is cached with key `ort-win-static-1.31.0-<sha256 of build_ort_baseline.ps1>` and restore-key prefix `ort-win-static-1.31.0-`. Editing the build script forces a new key, but the prefix still restores the previous tree, so the rebuild is incremental (clone reuse + msbuild up-to-date) rather than from scratch. Restore and save are **separate steps**: the save runs right after the ORT stage (`if: steps.C1.outputs.cache-hit != 'true'`), so a failure later in the job still leaves the tree reusable. The C2 step also repairs the cached clone (fetch tag `v1.31.0`, verify HEAD, delete stray same-commit tags) that the script's exact-tag guard would otherwise reject.
+- **Rust cache**: `Swatinem/rust-cache@v2` covers the `dll` workspace, keyed `phk-dll-ort-<hashFiles(build_ort_baseline.ps1)>` with `env-vars: ORT_LIB_PATH ORT_LIB_PROFILE ORT_PREFER_DYNAMIC_LINK ORT_SKIP_DOWNLOAD`. Rationale: rustc's default for `-l static` is `+bundle` — ort-sys's rlib COPIES the onnxruntime/re2/abseil archives into itself, and cargo tracks only env vars, so an ORT tree change must also invalidate the Rust cache.
+- Steps: A environment (toolchains, MSVC, ORT env) → B1 pinned Rust 1.92.0 + rustfmt → B2b Rust cache → B3 cmake ≥ 3.28 guard → C1 restore ORT tree → C2 ORT build → C2b re2 bootstrap → C2c model_package/utf8_range → C3 static-link guards → C3b save → **D** crate checks (`cargo fmt --check --all`, `cargo test`, `cargo build --release` → `dll\target\release\phk_dll.dll`) → **E** bundle + smoke.
+- **E (smoke)**: `dumpbin /dependents` on the DLL (must show no `onnxruntime.dll`; records MSVCP140/api-ms-win entries), downloads the **public-domain astronaut portrait** (`scikit-image` v0.14.2 pin — the file was removed from newer tags), stages the self-contained bundle from the checkout's committed `models/` and `licenses/` dirs (the DLL crate ships **no** Tauri resources), and writes the **Init-based** `phk-dll-smoke.cs` binding into the bundle (runtime `LoadLibrary`/`GetProcAddress` — no baked DLL path). It then **moves the whole bundle to a fresh temp directory** (`$env:TEMP\phk-bundle-<guid>`), calls `[PhkDll]::Init(<moved>\phk_dll.dll)`, and runs `phk_process` on a **Vietnamese-named copy** (`ảnh chân dung.png`) with no env override and no setter — the relocated bundle must resolve models from the DLL's own directory. Asserts rc=0, a JPG written, and dimensions **354×472**; the bundle is moved back into the workspace and `hashes.txt` (DLL + model + output JPG SHA-256) and `report.json` are written. Every step throws on failure; no `continue-on-error` anywhere.
+- Artifacts: `phk-dll-windows-x64` on success (whole `photokhan-dll-bundle`, `dll-dumpbin.txt`, `report.json`, `hashes.txt`); `windows-build-diagnostics` always (same minus the bundle, plus the staged `ort_build.log`).
+
+## 6. Verification evidence
+
+| Claim | Status |
+|---|---|
+| Build on windows-2022 runner (static ORT, no `onnxruntime.dll` in `phk_dll.dll`) | VERIFIED-BY-CI-RUN |
+| DLL smoke: astronaut.png → 354×472 JPG; model SHA-256 matches `manifest.json` | VERIFIED-BY-CI-RUN |
+| Windows 10 runtime | UNVERIFIED (needs a real Windows 10 machine) |
+| Older CPU / no-AVX2 | UNVERIFIED (baseline ORT build has no compile-time AVX flags; runtime-dispatch + real-hardware test still required) |
+| MSVCP140 / VC++ redist on a clean Windows 10 | UNVERIFIED (present on the runner; the DLL imports `MSVCP140.dll`, so target machines need the Microsoft Visual C++ 2015–2022 x64 Redistributable) |
+
+Update the status column after a CI run. The runner evidence (build, dumpbin, self-contained smoke) comes from the `phk-dll-windows-x64` artifact of the run; Windows 10 and no-AVX2 claims need a real Windows 10 machine without AVX2.
+
+## 7. Licenses
+
+- **YuNet** face detection model — MIT, Shiqi Yu; license text ships as `models/LICENSE` in the bundle.
 - **ONNX Runtime v1.31.0** — MIT; statically linked, no runtime files distributed. Full MIT license ships as `licenses\LICENSE-ONNX-Runtime`; `licenses\ThirdPartyNotices.txt` covers its bundled third-party components (RE2, Abseil, ...).
-- **utf8_range** (protobuf v33.6 dependency, statically linked) — MIT, © 2019 Yibo Cai / © 2022 Google LLC; ships as `licenses\LICENSE-utf8_range`.
-- **WebView2 Runtime** — Microsoft runtime, redistributable per Microsoft terms; the installer bootstraps it when absent.
+- **utf8_range** (protobuf dependency, statically linked) — MIT, © 2019 Yibo Cai / © 2022 Google LLC; ships as `licenses\LICENSE-utf8_range`.
 
 See `THIRD_PARTY_LICENSES.md` for the project-level license list.
 
 ## 8. Troubleshooting
 
-- **Cache key invalidation**: the cache key embeds the hash of `build_ort_baseline.ps1` — edit that file to force a new key. The restore key (`ort-win-static-1.31.0-`) still pulls the previous tree, so the rebuild starts from the cached checkout/build and is incremental rather than from scratch.
-- **`ORT_LIB_PATH` shape**: it must be the directory containing `Release\` **and** `_deps\` — i.e. `D:\build\onnxruntime\build\Windows\Release`, *not* `...\Release\Release` (that's the profile subdir holding the `.lib` files). ort-sys looks up `%ORT_LIB_PATH%\Release\*.lib` plus the externals under `%ORT_LIB_PATH%\_deps\` (protobuf-build, onnx-build, re2-build, abseil_cpp-build, google_nsync-build, pytorch_cpuinfo-build, pytorch_clog-build). The build script's `_deps externals` step and the workflow's C3 guard fail fast if `re2-build\Release\re2.lib` or the abseil base lib are missing, and dump the actual `_deps` layout.
-- **`ORT_SKIP_DOWNLOAD` semantics**: `1` makes ort-sys fail the build if the static tree is missing/misconfigured, instead of falling back to downloading the prebuilt `onnxruntime.dll`. Leave it set in CI; the "C3 guard" step additionally throws if `onnxruntime_common.lib`, `re2.lib`, `absl_base.lib` or `_deps\protobuf-build` are absent.
-- **re2 bootstrap (C2b)**: ort-sys 2.0.0-rc.15 unconditionally links static `re2` from `%ORT_LIB_PATH%\_deps\re2-build\Release\re2.lib`, but ORT 1.31.0's FetchContent re2 (`EXCLUDE_FROM_ALL`) is never compiled by the MSVC build. The workflow step builds the exact pinned tag (google/re2 `2024-07-02`, ORT's `cmake/deps.txt` pin) in a wrapper project that also `add_subdirectory`s the abseil-cpp source ORT already downloaded (`_deps\abseil_cpp-src`, tag `20250814.0`) — re2 2024-07-02 requires abseil — same MSVC Release `/MD` config, then copies `re2.lib` into place. Idempotent: skipped when the lib already exists; the result is inside the cached tree.
-- **dumpbin check**: `dumpbin /dependents photokhan.exe` must **not** list `onnxruntime.dll` (that would mean dynamic linking). `MSVCP140.dll` and `MSVCP140_1.dll` **are** imported — the target machine therefore needs the **Microsoft Visual C++ 2015–2022 x64 Redistributable** (v14.44-era runtime covers both DLLs). Present on the runner; availability on a clean Windows 10 machine is UNVERIFIED. `api-ms-win-crt-*`/`api-ms-win-core-*` are UCRT/inbox on Windows 10.
-- **Silent-install `C:\phk-ci-install`**: the CI wipes the directory before installing; the installed-run self-test runs from a fresh temp cwd with `PHOTOKHAN_MODELS_DIR` unset and asserts `resolution.selected` is exe-relative (`exe_dir`, `exe_dir/resources` or `exe_dir/models`), proving the installed app finds and verifies its model with no cwd/source-tree dependence. Model files are expected under `<install>\models\`.
+- **ORT cache key / restore-keys**: the cache key embeds the hash of `build_ort_baseline.ps1` — edit that file to force a new key. The restore key prefix (`ort-win-static-1.31.0-`) still pulls the previous tree, so the rebuild starts from the cached checkout/build and is incremental rather than from scratch. If the cached clone's HEAD carries stray tags at the v1.31.0 commit (e.g. `plugin-ep-cuda/v0.3.0`), C2 repairs them (fetch tag, verify HEAD, delete stray same-commit tags) so the script's exact-tag reuse guard passes and the cache key stays intact.
+- **`EXCLUDE_FROM_ALL` bootstraps**: ORT's MSVC build never compiles `EXCLUDE_FROM_ALL` projects — re2, model_package and utf8_range stay unbuilt and the Rust link fails with unresolved externals. C2b/C2c build them explicitly and stage the archives at the ort-sys probe paths; C3 guards their presence. Symptom: `unresolved external symbol` at `cargo build --release`. If re2 is missing, check `_deps\re2-build\Release\re2.lib` (the wrapper project must `add_subdirectory` the downloaded abseil source with **real inlined paths** — a previous version passed `-D` cache variables and CMake saw the literal `$VAR` strings, failing the configure).
+- **`ORT_LIB_PATH` shape**: it must be the directory containing `Release\` **and** `_deps\` — i.e. `D:\build\onnxruntime\build\Windows\Release`, *not* `...\Release\Release` (that is the profile subdir holding the `.lib` files).
+- **`ORT_SKIP_DOWNLOAD` semantics**: `1` makes ort-sys fail the build if the static tree is missing/misconfigured, instead of falling back to downloading the prebuilt `onnxruntime.dll`. Leave it set in CI.
+- **dumpbin check**: `dumpbin /dependents phk_dll.dll` must **not** list `onnxruntime.dll` (that would mean dynamic linking). `MSVCP140.dll` imports ARE expected — the target machine needs the **Microsoft Visual C++ 2015–2022 x64 Redistributable**. `api-ms-win-*` entries are UCRT/inbox on Windows 10.
+- **UTF-8 marshalling trap**: marshal paths as NUL-terminated `byte[]`; `CharSet.Ansi` uses the Windows code page and breaks Vietnamese filenames (the smoke test's `ảnh chân dung.png` would fail). Pass `UIntPtr` for `phk_last_error`'s capacity — Rust `usize` is 64-bit, `int` is 32-bit.
+- **panic=unwind note**: the `dll/` crate release profile keeps DEFAULT unwind so `catch_unwind` can contain Rust panics as `PHK_ERR_PANIC` (5). Do not add `panic=abort` to the dll release profile — a panic would then terminate the host process.
