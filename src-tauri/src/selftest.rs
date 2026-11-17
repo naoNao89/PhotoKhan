@@ -156,6 +156,14 @@ fn verify_and_detect(models_dir: &Path) -> AppResult<serde_json::Value> {
 
     let max_score = faces.iter().map(|face| face.score).reduce(f32::max);
 
+    // detect() đã kiểm tra chính xác số phần tử + giá trị hữu hạn của từng tensor
+    // (validate_tensor); ghi lại shape thực tế của 12 output để CI đối chiếu.
+    let output_shapes = detector.output_shapes();
+    let outputs: Vec<serde_json::Value> = output_shapes
+        .iter()
+        .map(|(name, dims)| serde_json::json!({"name": name, "shape": dims}))
+        .collect();
+
     Ok(serde_json::json!({
         "path": model_path,
         "sha256": actual_sha256,
@@ -165,6 +173,12 @@ fn verify_and_detect(models_dir: &Path) -> AppResult<serde_json::Value> {
         "input_size": MODEL_INPUT_SIZE,
         "faces": faces.len(),
         "max_score": max_score,
+        "outputs": outputs,
+        "tensor_validation": {
+            "exact_lengths": true,
+            "finite_values": true,
+            "output_count": outputs.len(),
+        },
     }))
 }
 

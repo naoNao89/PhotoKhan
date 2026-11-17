@@ -144,18 +144,18 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw "re2 clone failed (exit $LASTEXITCODE)" }
           }
           if (-not (Test-Path $abslSrc)) { throw "abseil_cpp-src not found at $abslSrc (ORT build must run first)" }
-          $wrapper = @(
-              'cmake_minimum_required(VERSION 3.20)',
-              'project(re2_bootstrap CXX)',
-              '# re2 2024-07-02 requires abseil: provide it from ORT''s own abseil-cpp source',
-              '# (same tag as ORT''s cmake/deps.txt) before adding re2.',
-              'add_subdirectory(${ABSL_SRC} absl)',
-              'add_subdirectory(${RE2_SRC} re2)'
-          ) -join [Environment]::NewLine
-          Set-Content -Path (Join-Path $re2Root 'CMakeLists.txt') -Value $wrapper
-          cmake -S $re2Root -B $build -G 'Visual Studio 17 2022' -A x64 `
-            -DCMAKE_BUILD_TYPE=Release -DRE2_BUILD_TESTING=OFF `
-            -DABSL_SRC=$abslSrc -DRE2_SRC=$src
+          # Write the wrapper with the real paths INLINED (no ${VAR} indirection):
+          # a previous version passed -DABSL_SRC=.../-DRE2_SRC=... and CMake saw
+          # the literal strings `$abslSrc`/`$src`, so the configure failed. The
+          # generated file is echoed below for diagnosis.
+          $cmakeLists = Join-Path $re2Root 'CMakeLists.txt'
+          Set-Content -Path $cmakeLists -Value 'cmake_minimum_required(VERSION 3.20)'
+          Add-Content -Path $cmakeLists -Value 'project(re2_bootstrap CXX)'
+          Add-Content -Path $cmakeLists -Value "add_subdirectory($abslSrc absl)"
+          Add-Content -Path $cmakeLists -Value "add_subdirectory($src re2)"
+          Write-Host 'wrapper CMakeLists.txt:'
+          Get-Content $cmakeLists
+          cmake -S $re2Root -B $build -G 'Visual Studio 17 2022' -A x64 -DCMAKE_BUILD_TYPE=Release -DRE2_BUILD_TESTING=OFF
           if ($LASTEXITCODE -ne 0) { throw "re2 cmake configure failed (exit $LASTEXITCODE)" }
           cmake --build $build --config Release --parallel --target re2
           if ($LASTEXITCODE -ne 0) { throw "re2 build failed (exit $LASTEXITCODE)" }
@@ -218,6 +218,7 @@ jobs:
           $r = Get-Content selftest-dev.json -Raw | ConvertFrom-Json
           if ($r.status -ne 'ok') { throw "self-test status is '$($r.status)', expected 'ok'" }
           if ($r.model.sha256_match -ne $true) { throw 'model.sha256_match is not true' }
+          if ($r.model.tensor_validation.output_count -ne 12) { throw "expected 12 YuNet output tensors, got $($r.model.tensor_validation.output_count)" }
           Write-Host "Self-test OK: $($r | ConvertTo-Json -Compress -Depth 6)"
 
       - name: F - Tauri release build (NSIS installer)
@@ -327,6 +328,7 @@ jobs:
               if ($r.status -ne 'ok') { throw "installed self-test status: '$($r.status)'" }
               if ($r.resolution.selected -notin @('exe_dir', 'exe_dir/resources', 'exe_dir/models')) { throw "resolution.selected is '$($r.resolution.selected)', expected an exe-relative candidate" }
               if ($r.model.sha256_match -ne $true) { throw 'installed model.sha256_match is not true' }
+              if ($r.model.tensor_validation.output_count -ne 12) { throw "installed self-test: expected 12 YuNet output tensors, got $($r.model.tensor_validation.output_count)" }
               Write-Host "Installed self-test OK: $($r | ConvertTo-Json -Compress -Depth 6)"
           }
           finally {

@@ -83,6 +83,8 @@ impl Face {
 pub struct FaceDetector {
     session: Session,
     input_name: String,
+    /// Shape (dims) của 12 output YuNet từ lần `detect()` gần nhất (tên, dims).
+    output_shapes: Vec<(String, Vec<i64>)>,
 }
 
 impl FaceDetector {
@@ -106,7 +108,13 @@ impl FaceDetector {
         Ok(Self {
             session,
             input_name,
+            output_shapes: Vec::new(),
         })
+    }
+
+    /// Shape (dims) của các output YuNet từ lần `detect()` gần nhất.
+    pub fn output_shapes(&self) -> &[(String, Vec<i64>)] {
+        &self.output_shapes
     }
 
     /// Phát hiện khuôn mặt trên ảnh RGB 8-bit. Trả về toạ độ theo pixel ảnh gốc.
@@ -151,21 +159,26 @@ impl FaceDetector {
         let scale_x = image.width() as f32 / MODEL_INPUT_SIZE as f32;
         let scale_y = image.height() as f32 / MODEL_INPUT_SIZE as f32;
         let mut candidates = Vec::new();
+        let mut output_shapes = Vec::new();
 
         for stride in STRIDES {
             let cells = ((MODEL_INPUT_SIZE / stride) * (MODEL_INPUT_SIZE / stride)) as usize;
-            let cls = output_tensor(&outputs, &format!("cls_{stride}"))?;
-            let obj = output_tensor(&outputs, &format!("obj_{stride}"))?;
-            let bbox = output_tensor(&outputs, &format!("bbox_{stride}"))?;
-            let kps = output_tensor(&outputs, &format!("kps_{stride}"))?;
+            let (cls_dims, cls) = output_tensor(&outputs, &format!("cls_{stride}"))?;
+            let (obj_dims, obj) = output_tensor(&outputs, &format!("obj_{stride}"))?;
+            let (bbox_dims, bbox) = output_tensor(&outputs, &format!("bbox_{stride}"))?;
+            let (kps_dims, kps) = output_tensor(&outputs, &format!("kps_{stride}"))?;
 
-            if cls.len() < cells
-                || obj.len() < cells
-                || bbox.len() < cells * 4
-                || kps.len() < cells * 10
-            {
-                return Err(AppError::model_runtime());
-            }
+            // Số phần tử phải khớp chính xác (không chỉ >=): shape sai hoặc NaN
+            // trong tensor sẽ bị từ chối thay vì âm thầm cho 0 khuôn mặt.
+            validate_tensor(cls, cells)?;
+            validate_tensor(obj, cells)?;
+            validate_tensor(bbox, cells * 4)?;
+            validate_tensor(kps, cells * 10)?;
+
+            output_shapes.push((format!("cls_{stride}"), cls_dims));
+            output_shapes.push((format!("obj_{stride}"), obj_dims));
+            output_shapes.push((format!("bbox_{stride}"), bbox_dims));
+            output_shapes.push((format!("kps_{stride}"), kps_dims));
 
             decode_level(
                 cls,
@@ -178,6 +191,7 @@ impl FaceDetector {
                 &mut candidates,
             );
         }
+        self.output_shapes = output_shapes;
 
         Ok(non_maximum_suppression(candidates))
     }
@@ -186,12 +200,23 @@ impl FaceDetector {
 fn output_tensor<'outputs>(
     outputs: &'outputs SessionOutputs<'_>,
     name: &str,
-) -> AppResult<&'outputs [f32]> {
+) -> AppResult<(Vec<i64>, &'outputs [f32])> {
     let value = outputs.get(name).ok_or_else(AppError::model_runtime)?;
-    let (_, data) = value
+    let (view, data) = value
         .try_extract_tensor::<f32>()
         .map_err(|_| AppError::model_runtime())?;
-    Ok(data)
+    Ok((view.shape().to_vec(), data))
+}
+
+/// Kiểm tra một tensor output: số phần tử khớp chính xác và mọi giá trị hữu hạn.
+fn validate_tensor(data: &[f32], expected: usize) -> AppResult<()> {
+    if data.len() != expected {
+        return Err(AppError::model_runtime());
+    }
+    if !data.iter().all(|value| value.is_finite()) {
+        return Err(AppError::model_runtime());
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -284,7 +309,9 @@ fn intersection_over_union(left: &Rect, right: &Rect) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Face, Point, Rect, intersection_over_union, non_maximum_suppression};
+    use super::{
+        Face, Point, Rect, intersection_over_union, non_maximum_suppression, validate_tensor,
+    };
 
     fn face(x: f32, y: f32, score: f32) -> Face {
         Face {
@@ -321,5 +348,18 @@ mod tests {
     fn nms_keeps_separate_boxes() {
         let kept = non_maximum_suppression(vec![face(0.0, 0.0, 0.9), face(50.0, 50.0, 0.8)]);
         assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn tensor_with_wrong_length_is_rejected() {
+        assert!(validate_tensor(&[0.0; 4], 5).is_err());
+        assert!(validate_tensor(&[0.0; 5], 5).is_ok());
+    }
+
+    #[test]
+    fn tensor_with_non_finite_values_is_rejected() {
+        assert!(validate_tensor(&[0.0, f32::NAN, 0.0], 3).is_err());
+        assert!(validate_tensor(&[0.0, f32::INFINITY, 0.0], 3).is_err());
+        assert!(validate_tensor(&[0.0, 0.5, 1.0], 3).is_ok());
     }
 }
