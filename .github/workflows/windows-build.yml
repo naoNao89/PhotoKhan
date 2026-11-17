@@ -95,13 +95,15 @@ jobs:
           }
           cmake --version
 
-      - name: C1 - Restore ONNX Runtime build tree (Release + _deps)
+      - name: C1 - Restore ONNX Runtime source + build tree
         id: C1
         uses: actions/cache/restore@v4
         with:
-          # Source clone stays outside the cache (re-cloned each run, ~1 min);
-          # the cached build tree makes the subsequent build.bat run incremental.
-          path: 'D:\build\onnxruntime\build\Windows\Release'
+          # Whole tree, including the git clone: build_ort_baseline.ps1 refuses to
+          # run when D:\build\onnxruntime exists without .git, and the CMakeCache
+          # bakes in absolute source paths. Restoring the full tree makes warm
+          # runs incremental (clone reuse + msbuild up-to-date).
+          path: 'D:\build\onnxruntime'
           key: ort-win-static-1.31.0-${{ hashFiles('build_ort_baseline.ps1') }}
           restore-keys: |
             ort-win-static-1.31.0-
@@ -184,11 +186,11 @@ jobs:
       # post-save whenever the job fails, which would burn a full ORT rebuild on
       # every iteration. Save runs right after the ORT stage, so later failures
       # (Rust/tests/installer) still leave a reusable tree.
-      - name: C3b - Save ONNX Runtime build tree (only on restore miss)
+      - name: C3b - Save ONNX Runtime tree (only on restore miss)
         if: steps.C1.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: 'D:\build\onnxruntime\build\Windows\Release'
+          path: 'D:\build\onnxruntime'
           key: ort-win-static-1.31.0-${{ hashFiles('build_ort_baseline.ps1') }}
 
       - name: D - Rust checks (fmt, lib tests, release build)
