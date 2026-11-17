@@ -562,6 +562,63 @@ jobs:
           $report | ConvertTo-Json -Depth 6 | Set-Content report.json
           Get-Content report.json
 
+      - name: G8 - Inference DLL build + drop-in smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dll = 'src-tauri\target\release\photokhan_lib.dll'
+          if (-not (Test-Path $dll)) { throw "inference DLL not found: $dll" }
+          # static ORT check on the DLL itself
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $dumpbin = Get-ChildItem -Path (Join-Path $vsPath 'VC\Tools\MSVC') -Recurse -File -Filter 'dumpbin.exe' -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin.exe not found' }
+          & $dumpbin.FullName /nologo /dependents $dll *> dll-dumpbin.txt
+          $dllDeps = Get-Content dll-dumpbin.txt -Raw
+          if ($dllDeps -match 'onnxruntime\.dll') { throw 'photokhan_lib.dll imports onnxruntime.dll - not static' }
+          Write-Host 'OK: photokhan_lib.dll has no onnxruntime.dll dependency (static ORT)'
+          # Real-face sample: public-domain astronaut portrait from scikit-image.
+          $sample = Join-Path $env:GITHUB_WORKSPACE 'astronaut.png'
+          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/scikit-image/scikit-image/main/skimage/data/astronaut.png' -OutFile $sample -UseBasicParsing
+          if (-not (Test-Path $sample)) { throw 'failed to download astronaut.png sample' }
+          $csFile = Join-Path $env:GITHUB_WORKSPACE 'phk-dll-smoke.cs'
+          $dllAbs = (Join-Path $env:GITHUB_WORKSPACE 'src-tauri\target\release\photokhan_lib.dll').Replace('\', '\\')
+          $cs = @(
+              'using System;',
+              'using System.Runtime.InteropServices;',
+              'using System.Text;',
+              'public static class PhkDll {',
+              '    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]',
+              '    public static extern int phk_set_models_dir(string dir);',
+              '    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]',
+              '    public static extern int phk_process(string input, string outputDir);',
+              '    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]',
+              '    public static extern int phk_last_error(StringBuilder buf, int cap);',
+              '}'
+          ) -join [Environment]::NewLine
+          Set-Content -Path $csFile -Value $cs
+          Add-Type -Path $csFile
+          $env:PHOTOKHAN_MODELS_DIR = "$env:GITHUB_WORKSPACE\models"
+          $outDir = Join-Path $env:GITHUB_WORKSPACE 'dll-out'
+          if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
+          $rc = [PhkDll]::phk_set_models_dir("$env:GITHUB_WORKSPACE\models")
+          if ($rc -ne 0) { throw "phk_set_models_dir failed (rc $rc)" }
+          $rc = [PhkDll]::phk_process($sample, $outDir)
+          if ($rc -ne 0) {
+              $buf = New-Object System.Text.StringBuilder 1024
+              [PhkDll]::phk_last_error($buf, 1024) | Out-Null
+              throw "phk_process failed (rc $rc): $buf"
+          }
+          $jpg = Get-ChildItem -Path $outDir -File -Filter '*.jpg' | Select-Object -First 1
+          if (-not $jpg) { throw 'phk_process returned OK but no JPG was written' }
+          Add-Type -AssemblyName System.Drawing
+          $img = [System.Drawing.Image]::FromFile($jpg.FullName)
+          $dims = "$($img.Width)x$($img.Height)"
+          $img.Dispose()
+          Write-Host "DLL smoke OK: $($jpg.Name) ($dims), rc=$rc"
+          Add-Content -Path $env:GITHUB_ENV -Value 'PHK_DLL_SMOKE_OK=true'
+
       # Stage the ORT build log inside the workspace: upload-artifact@v4 only
       # accepts paths within the workspace.
       - name: H0 - Stage ORT build log for diagnostics
@@ -584,8 +641,10 @@ jobs:
           name: photokhan-windows-x64
           path: |
             src-tauri/target/release/bundle/nsis/photokhan_0.1.0_x64-setup.exe
+            src-tauri/target/release/photokhan_lib.dll
             report.json
             dumpbin.txt
+            dll-dumpbin.txt
             hashes.txt
             selftest-dev.json
             installed-selftest.json
@@ -599,6 +658,7 @@ jobs:
           path: |
             report.json
             dumpbin.txt
+            dll-dumpbin.txt
             hashes.txt
             selftest-dev.json
             installed-selftest.json

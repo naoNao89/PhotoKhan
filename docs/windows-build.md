@@ -116,8 +116,32 @@ Uploaded by `windows-build.yml` (artifact `photokhan-windows-x64` on success; `w
 - `selftest-dev.json`, `installed-selftest.json` — the two self-test JSON documents.
 - `ort_build.log` (diagnostics only) — the ORT build transcript from `D:\build`.
 
-## 7. Licenses
+- `photokhan_lib.dll` — the C-ABI inference DLL (drop-in: input photo → ID-photo JPG), same static ORT + model verification as the app.
 
+## 7. Inference DLL (`photokhan_lib.dll`)
+
+Exports (C ABI, cdecl, UTF-8 paths):
+
+| Export | Contract |
+|---|---|
+| `int phk_set_models_dir(const char* dir)` | 0 ok; sets the models dir (must contain `manifest.json` + the `.onnx`). |
+| `int phk_process(const char* input, const char* outputDir)` | 0 = wrote an ID-photo JPG (preset 3×4, white bg, head straightened) into `outputDir`; 1 = bad args; 2 = model missing/verify failed; 3 = image unreadable / no face (E002) / multiple faces (E003); 4 = pipeline/IO; 5 = panic caught. |
+| `int phk_last_error(char* buf, int cap)` | Copies the last error (UTF-8, empty on success) into `buf`; returns the needed size. |
+
+Model dir resolution: `phk_set_models_dir` → env `PHOTOKHAN_MODELS_DIR` → `<host-exe>\models`. Panics never cross the FFI boundary. The DLL ships the same statically-linked ORT (no `onnxruntime.dll`; dumpbin-verified in CI, see `dll-dumpbin.txt`).
+
+PowerShell example:
+
+```powershell
+Add-Type -Path phk-dll-smoke.cs          # DllImport the three exports
+[PhkDll]::phk_set_models_dir("$PWD\models")
+$rc = [PhkDll]::phk_process("photo.jpg", "out")
+if ($rc -ne 0) { [PhkDll]::phk_last_error($buf, 1024) | Out-Null }
+```
+
+CI G8 proves it end-to-end on a real face photo (public-domain astronaut portrait): downloads the sample, P/Invokes `phk_process`, asserts a valid 354×472 JPG is written. Host prerequisites: same MSVCP140 (VC++ redist) note as the exe; the DLL is `x64`.
+
+## 8. Licenses
 - **YuNet** face detection model — MIT, Shiqi Yu; the model's license text ships as `models/LICENSE` inside the installer.
 - **ONNX Runtime v1.31.0** — MIT; statically linked, no runtime files distributed. Full MIT license ships as `licenses\LICENSE-ONNX-Runtime`; `licenses\ThirdPartyNotices.txt` covers its bundled third-party components (RE2, Abseil, ...).
 - **utf8_range** (protobuf v33.6 dependency, statically linked) — MIT, © 2019 Yibo Cai / © 2022 Google LLC; ships as `licenses\LICENSE-utf8_range`.

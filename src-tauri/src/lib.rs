@@ -1,3 +1,4 @@
+mod capi;
 mod clock;
 mod commands;
 mod error;
