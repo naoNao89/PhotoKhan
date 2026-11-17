@@ -207,6 +207,41 @@ jobs:
           Copy-Item $re2Lib $target -Force
           Write-Host "Bootstrap OK: $target ($((Get-Item $target).Length) bytes)"
 
+      - name: C2c - Build EXCLUDE_FROM_ALL deps (model_package, utf8_range)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ortBuild = 'D:\build\onnxruntime\build\Windows\Release'
+          # ORT's MSVC build never compiles EXCLUDE_FROM_ALL projects (same disease
+          # as re2): onnxruntime_session globs core/session/model_package/*.cc and
+          # links the standalone model_package subproject, and libprotobuf-lite
+          # references utf8_range_*. Both stay unbuilt -> 9 unresolved externals at
+          # the Rust link. Build each target explicitly and place the archives
+          # where ort-sys looks.
+          cmake --build $ortBuild --config Release --parallel --target model_package
+          if ($LASTEXITCODE -ne 0) { throw "model_package target build failed (exit $LASTEXITCODE)" }
+          $mpLib = Get-ChildItem -Path (Join-Path $ortBuild 'model_package') -Recurse -File -Filter 'model_package.lib' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $mpLib) { throw 'model_package.lib not found under the ORT build tree' }
+          $mpTarget = Join-Path (Join-Path $ortBuild 'Release') 'model_package\model_package.lib'
+          New-Item -ItemType Directory -Force -Path (Split-Path $mpTarget -Parent) | Out-Null
+          Copy-Item $mpLib.FullName $mpTarget -Force
+          Write-Host "model_package.lib -> $mpTarget"
+
+          $pbBuild = Join-Path $ortBuild '_deps\protobuf-build'
+          if (-not (Test-Path (Join-Path $pbBuild 'protobuf.sln'))) { throw "protobuf build tree missing: $pbBuild" }
+          cmake --build $pbBuild --config Release --parallel --target utf8_range
+          if ($LASTEXITCODE -ne 0) { throw "utf8_range target build failed (exit $LASTEXITCODE)" }
+          $urExpected = Join-Path (Join-Path $pbBuild 'third_party') 'utf8_range\Release\utf8_range.lib'
+          $urLib = Get-ChildItem -Path (Join-Path $pbBuild 'third_party\utf8_range') -Recurse -File -Filter 'utf8_range.lib' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $urLib) { throw 'utf8_range.lib not found under protobuf-build\third_party\utf8_range' }
+          if ($urLib.FullName -ne $urExpected) {
+              New-Item -ItemType Directory -Force -Path (Split-Path $urExpected -Parent) | Out-Null
+              Copy-Item $urLib.FullName $urExpected -Force
+              Write-Host "utf8_range.lib copied to expected path: $urExpected"
+          } else {
+              Write-Host "utf8_range.lib already at expected path: $urExpected"
+          }
+
       - name: C3 - Guard static-link prerequisites
         shell: pwsh
         run: |
@@ -219,10 +254,16 @@ jobs:
           if (-not (Test-Path $re2Lib)) { throw "re2 static lib missing: $re2Lib (C2b bootstrap should have produced it)" }
           $abslBase = 'D:\build\onnxruntime\build\Windows\Release\_deps\abseil_cpp-build\absl\base\Release\absl_base.lib'
           if (-not (Test-Path $abslBase)) { throw "abseil static lib missing: $abslBase" }
+          $mpLib = 'D:\build\onnxruntime\build\Windows\Release\Release\model_package\model_package.lib'
+          if (-not (Test-Path $mpLib)) { throw "model_package static lib missing: $mpLib (C2c should have produced it)" }
+          $urLib = 'D:\build\onnxruntime\build\Windows\Release\_deps\protobuf-build\third_party\utf8_range\Release\utf8_range.lib'
+          if (-not (Test-Path $urLib)) { throw "utf8_range static lib missing: $urLib (C2c should have produced it)" }
           Write-Host "OK: $staticLib"
           Write-Host "OK: $depsDir (protobuf externals present)"
           Write-Host "OK: $re2Lib"
           Write-Host "OK: $abslBase"
+          Write-Host "OK: $mpLib"
+          Write-Host "OK: $urLib"
 
       # Explicit save (not the default post hook): actions/cache@v4 skips its
       # post-save whenever the job fails, which would burn a full ORT rebuild on
