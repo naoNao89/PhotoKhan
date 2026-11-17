@@ -154,6 +154,8 @@ jobs:
           $srcFwd = $src.Replace('\', '/')
           Set-Content -Path $cmakeLists -Value 'cmake_minimum_required(VERSION 3.20)'
           Add-Content -Path $cmakeLists -Value 'project(re2_bootstrap CXX)'
+          Add-Content -Path $cmakeLists -Value 'set(CMAKE_CXX_STANDARD 17)'
+          Add-Content -Path $cmakeLists -Value 'set(CMAKE_CXX_STANDARD_REQUIRED ON)'
           Add-Content -Path $cmakeLists -Value "add_subdirectory(`"$abslSrcFwd`" absl)"
           Add-Content -Path $cmakeLists -Value "add_subdirectory(`"$srcFwd`" re2)"
           Write-Host 'wrapper CMakeLists.txt:'
@@ -260,34 +262,20 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $releaseDir = Join-Path $env:GITHUB_WORKSPACE 'src-tauri\target\release'
-          $expected = @('manifest.json', 'face_detection_yunet_2023mar.onnx', 'LICENSE')
-          $layout = $null
-          foreach ($candidate in @('models', 'resources\models', 'exe_dir', 'resources')) {
-              $base = switch ($candidate) {
-                  'models'           { Join-Path $releaseDir 'models' }
-                  'resources\models' { Join-Path (Join-Path $releaseDir 'resources') 'models' }
-                  'exe_dir'          { $releaseDir }
-                  'resources'        { Join-Path $releaseDir 'resources' }
-              }
-              $allPresent = $true
-              foreach ($name in $expected) {
-                  if (-not (Test-Path (Join-Path $base $name))) { $allPresent = $false; break }
-              }
-              if ($allPresent) { $layout = $candidate; break }
+          # Locate the bundled model wherever Tauri actually placed it, derive the
+          # layout from its real location, and require manifest.json + LICENSE beside it.
+          $onnx = Get-ChildItem -Path $releaseDir -Recurse -File -Filter 'face_detection_yunet_2023mar.onnx' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $onnx) { throw "bundled model not found anywhere under $releaseDir" }
+          $onnxDir = $onnx.Directory.FullName
+          $layout = $onnxDir.Substring($releaseDir.Length).TrimStart('\').Replace('\', '/')
+          if (-not $layout) { $layout = 'exe_dir' }
+          foreach ($name in @('manifest.json', 'LICENSE')) {
+              if (-not (Test-Path (Join-Path $onnxDir $name))) { throw "bundled resource missing beside model: $name (in $onnxDir)" }
           }
-          if (-not $layout) {
-              throw "Bundled resources missing in all layouts; expected: $($expected -join ', ')"
-          }
-          Write-Host "Resource layout produced by Tauri: $layout"
+          Write-Host "Resource layout produced by Tauri: $layout ($onnxDir)"
           Add-Content -Path $env:GITHUB_ENV -Value "PHK_RESOURCE_LAYOUT=$layout"
-          $onnxRel = switch ($layout) {
-              'models'           { 'models\face_detection_yunet_2023mar.onnx' }
-              'resources\models' { 'resources\models\face_detection_yunet_2023mar.onnx' }
-              'exe_dir'          { 'face_detection_yunet_2023mar.onnx' }
-              'resources'        { 'resources\face_detection_yunet_2023mar.onnx' }
-          }
-          $onnx = Join-Path $releaseDir $onnxRel
-          $hash = (Get-FileHash -Path $onnx -Algorithm SHA256).Hash
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_RESOURCE_DIR=$onnxDir"
+          $hash = (Get-FileHash -Path $onnx.FullName -Algorithm SHA256).Hash
           Write-Host "model sha256: $hash"
           if ($hash -ine '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4') {
               throw "model sha256 mismatch: $hash"
@@ -305,15 +293,19 @@ jobs:
           $p = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$targetDir" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "installer exit code: $($p.ExitCode)" }
           if (-not (Test-Path (Join-Path $targetDir 'photokhan.exe'))) { throw 'installed photokhan.exe missing' }
-          if (-not (Test-Path (Join-Path $targetDir 'uninstall-photokhan.exe'))) { throw 'uninstall-photokhan.exe missing' }
-          foreach ($name in @('manifest.json', 'face_detection_yunet_2023mar.onnx', 'LICENSE')) {
-              if (-not (Test-Path (Join-Path (Join-Path $targetDir 'models') $name))) { throw "installed model file missing: models\$name" }
+          # tauri-bundler 2.12.4 installer.nsi writes the uninstaller as uninstall.exe
+          if (-not (Test-Path (Join-Path $targetDir 'uninstall.exe'))) { throw 'installed uninstall.exe missing' }
+          $model = Get-ChildItem -Path $targetDir -Recurse -File -Filter 'face_detection_yunet_2023mar.onnx' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $model) { throw "installed model not found under $targetDir" }
+          foreach ($name in @('manifest.json', 'LICENSE')) {
+              if (-not (Test-Path (Join-Path $model.Directory.FullName $name))) { throw "installed resource missing beside model: $name" }
           }
-          $hash = (Get-FileHash -Path (Join-Path (Join-Path $targetDir 'models') 'face_detection_yunet_2023mar.onnx') -Algorithm SHA256).Hash
+          $hash = (Get-FileHash -Path $model.FullName -Algorithm SHA256).Hash
           if ($hash -ine '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4') {
               throw "installed model sha256 mismatch: $hash"
           }
-          Write-Host "OK: silent install verified in $targetDir"
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_INSTALLED_MODEL=$($model.FullName)"
+          Write-Host "OK: silent install verified in $targetDir (model at $($model.FullName))"
 
       - name: G4 - Installed-run inference (fresh temp cwd)
         shell: pwsh
@@ -367,12 +359,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $modelRel = switch ($env:PHK_RESOURCE_LAYOUT) {
-              'models'           { 'src-tauri\target\release\models\face_detection_yunet_2023mar.onnx' }
-              'resources\models' { 'src-tauri\target\release\resources\models\face_detection_yunet_2023mar.onnx' }
-              'resources'        { 'src-tauri\target\release\resources\face_detection_yunet_2023mar.onnx' }
-              default            { 'src-tauri\target\release\face_detection_yunet_2023mar.onnx' }
-          }
+          $modelRel = Join-Path $env:PHK_RESOURCE_DIR 'face_detection_yunet_2023mar.onnx'
           $targets = @(
               'src-tauri\target\release\bundle\nsis\photokhan_0.1.0_x64-setup.exe',
               'src-tauri\target\release\photokhan.exe',
@@ -396,7 +383,7 @@ jobs:
           $inst = Get-Content installed-selftest.json -Raw | ConvertFrom-Json
           $installerSha = (Get-FileHash 'src-tauri\target\release\bundle\nsis\photokhan_0.1.0_x64-setup.exe' -Algorithm SHA256).Hash
           $exeSha = (Get-FileHash 'src-tauri\target\release\photokhan.exe' -Algorithm SHA256).Hash
-          $modelSha = (Get-FileHash 'C:\phk-ci-install\models\face_detection_yunet_2023mar.onnx' -Algorithm SHA256).Hash
+          $modelSha = (Get-FileHash $env:PHK_INSTALLED_MODEL -Algorithm SHA256).Hash
           $report = [ordered]@{
               git_ref      = $env:GITHUB_REF
               git_sha      = $env:GITHUB_SHA
