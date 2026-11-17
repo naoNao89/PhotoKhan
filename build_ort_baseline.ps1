@@ -237,6 +237,39 @@ try {
         }
     }
 
+    # ------------------------------------------------------------- _deps externals
+    Write-Step "Verifying _deps externals (re2 / abseil / protobuf / onnx)"
+    $depsDir = Join-Path $RepoDir 'build\Windows\Release\_deps'
+    if (-not (Test-Path $depsDir)) { Fail "_deps dir not found at $depsDir" }
+    $depsSubdirs = Get-ChildItem -Path $depsDir -Directory | Sort-Object Name
+    Write-Host "deps subdirs ($($depsSubdirs.Count)):"
+    $depsSubdirs | ForEach-Object { Write-Host "  $($_.Name)" }
+
+    Write-Host ""
+    # ort-sys 2.0.0-rc.15 static link unconditionally links `re2` (static_link/mod.rs),
+    # expecting $ORT_LIB_PATH\_deps\re2-build\Release\re2.lib
+    $re2Build = Join-Path $depsDir 're2-build'
+    $re2Lib = Join-Path $re2Build 'Release\re2.lib'
+    if (Test-Path $re2Lib) {
+        Write-Host "OK: $re2Lib ($((Get-Item $re2Lib).Length) bytes)" -ForegroundColor Green
+    } else {
+        Write-Host "MISSING: $re2Lib" -ForegroundColor Yellow
+        if (Test-Path $re2Build) {
+            Write-Host "Contents of $re2Build (recursive *.lib, first 25):"
+            Get-ChildItem -Path $re2Build -Recurse -File -Filter '*.lib' | Select-Object -First 25 |
+                ForEach-Object { Write-Host "  $($_.FullName)  ($($_.Length) bytes)" }
+        }
+        Fail "re2.lib not found - ort-sys requires it for static linking. See layout above."
+    }
+
+    # ort-sys also links abseil components from _deps\abseil_cpp-build\absl\<component>\Release
+    $abslBase = Join-Path $depsDir 'abseil_cpp-build\absl\base\Release\absl_base.lib'
+    if (Test-Path $abslBase) {
+        Write-Host "OK: $abslBase"
+    } else {
+        Write-Host "MISSING: $abslBase (informational - ort-sys needs abseil libs)" -ForegroundColor Yellow
+    }
+
     Write-Step "Done"
     Write-Host "Build log : $LogPath"
     Write-Host "Next: Bước 3 - keep .cargo\config.toml pointing at ORT_LIB_PATH above, then run:"

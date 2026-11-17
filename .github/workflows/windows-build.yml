@@ -95,10 +95,12 @@ jobs:
           }
           cmake --version
 
-      - name: C1 - Cache ONNX Runtime source + build tree
+      - name: C1 - Cache ONNX Runtime build tree (Release + _deps)
         uses: actions/cache@v4
         with:
-          path: 'D:\build\onnxruntime'
+          # Source clone stays outside the cache (re-cloned each run, ~1 min);
+          # the cached build tree makes the subsequent build.bat run incremental.
+          path: 'D:\build\onnxruntime\build\Windows\Release'
           key: ort-win-static-1.31.0-${{ hashFiles('build_ort_baseline.ps1') }}
           restore-keys: |
             ort-win-static-1.31.0-
@@ -121,8 +123,14 @@ jobs:
           $depsDir = 'D:\build\onnxruntime\build\Windows\Release\_deps\protobuf-build'
           if (-not (Test-Path $staticLib)) { throw "static lib missing: $staticLib" }
           if (-not (Test-Path $depsDir)) { throw "_deps build tree missing: $depsDir" }
+          $re2Lib = 'D:\build\onnxruntime\build\Windows\Release\_deps\re2-build\Release\re2.lib'
+          if (-not (Test-Path $re2Lib)) { throw "re2 static lib missing: $re2Lib" }
+          $abslBase = 'D:\build\onnxruntime\build\Windows\Release\_deps\abseil_cpp-build\absl\base\Release\absl_base.lib'
+          if (-not (Test-Path $abslBase)) { throw "abseil static lib missing: $abslBase" }
           Write-Host "OK: $staticLib"
           Write-Host "OK: $depsDir (protobuf externals present)"
+          Write-Host "OK: $re2Lib"
+          Write-Host "OK: $abslBase"
 
       - name: D - Rust checks (fmt, lib tests, release build)
         working-directory: src-tauri
