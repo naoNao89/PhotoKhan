@@ -202,10 +202,10 @@ fn output_tensor<'outputs>(
     name: &str,
 ) -> AppResult<(Vec<i64>, &'outputs [f32])> {
     let value = outputs.get(name).ok_or_else(AppError::model_runtime)?;
-    let (view, data) = value
+    let (shape, data) = value
         .try_extract_tensor::<f32>()
         .map_err(|_| AppError::model_runtime())?;
-    Ok((view.shape().to_vec(), data))
+    Ok((shape.to_vec(), data))
 }
 
 /// Kiểm tra một tensor output: số phần tử khớp chính xác và mọi giá trị hữu hạn.

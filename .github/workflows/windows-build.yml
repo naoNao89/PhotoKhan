@@ -146,13 +146,16 @@ jobs:
           if (-not (Test-Path $abslSrc)) { throw "abseil_cpp-src not found at $abslSrc (ORT build must run first)" }
           # Write the wrapper with the real paths INLINED (no ${VAR} indirection):
           # a previous version passed -DABSL_SRC=.../-DRE2_SRC=... and CMake saw
-          # the literal strings `$abslSrc`/`$src`, so the configure failed. The
-          # generated file is echoed below for diagnosis.
+          # the literal strings `$abslSrc`/`$src`, so the configure failed. Use
+          # forward slashes + quotes: unquoted CMake args would mangle \b-style
+          # escapes. The generated file is echoed below for diagnosis.
           $cmakeLists = Join-Path $re2Root 'CMakeLists.txt'
+          $abslSrcFwd = $abslSrc.Replace('\', '/')
+          $srcFwd = $src.Replace('\', '/')
           Set-Content -Path $cmakeLists -Value 'cmake_minimum_required(VERSION 3.20)'
           Add-Content -Path $cmakeLists -Value 'project(re2_bootstrap CXX)'
-          Add-Content -Path $cmakeLists -Value "add_subdirectory($abslSrc absl)"
-          Add-Content -Path $cmakeLists -Value "add_subdirectory($src re2)"
+          Add-Content -Path $cmakeLists -Value "add_subdirectory(`"$abslSrcFwd`" absl)"
+          Add-Content -Path $cmakeLists -Value "add_subdirectory(`"$srcFwd`" re2)"
           Write-Host 'wrapper CMakeLists.txt:'
           Get-Content $cmakeLists
           cmake -S $re2Root -B $build -G 'Visual Studio 17 2022' -A x64 -DCMAKE_BUILD_TYPE=Release -DRE2_BUILD_TESTING=OFF
