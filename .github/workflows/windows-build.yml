@@ -75,6 +75,15 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: B2b - Rust dependency cache (target + ~/.cargo)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri'
+          cache-on-failure: 'true'
+          # ort-sys re-emits its native link directives from ORT_LIB_PATH each
+          # build (the rlib does not bundle the .lib archives), so this cache is
+          # independent of the ORT tree; the tree itself is cached by C1.
+
       - name: B3 - cmake >= 3.28 guard
         shell: pwsh
         run: |
@@ -114,6 +123,26 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $gitDir = 'D:\build\onnxruntime'
+          if (Test-Path (Join-Path $gitDir '.git')) {
+              # The cached clone's HEAD may carry multiple tags at the v1.31.0 commit
+              # (e.g. plugin-ep-cuda/v0.3.0), which breaks the ps1's exact-tag reuse
+              # guard even though the tree is correct. Verify HEAD against the tag
+              # and drop any stray same-commit tags, keeping the cache key intact.
+              & git -C $gitDir fetch --depth 1 origin tag v1.31.0 2>$null
+              $head = (& git -C $gitDir rev-parse HEAD).Trim()
+              $target = (& git -C $gitDir rev-parse 'refs/tags/v1.31.0^{commit}').Trim()
+              if ($head -ne $target) { throw "cached clone HEAD $head is not v1.31.0 ($target)" }
+              foreach ($t in (& git -C $gitDir tag -l)) {
+                  if ($t -eq 'v1.31.0') { continue }
+                  $tcommit = (& git -C $gitDir rev-parse "refs/tags/$t^{commit}" 2>$null).Trim()
+                  if ($tcommit -eq $head) {
+                      & git -C $gitDir tag -d $t | Out-Null
+                      Write-Host "removed stray tag '$t' (same commit as v1.31.0)"
+                  }
+              }
+              Write-Host "cached clone verified at v1.31.0 commit $head"
+          }
           powershell -ExecutionPolicy Bypass -File build_ort_baseline.ps1 -BuildRoot D:\build -RepoDir D:\build\onnxruntime -LogPath D:\build\ort_build.log -SkipDumpbin
           if ($LASTEXITCODE -ne 0) { throw "build_ort_baseline.ps1 failed (exit $LASTEXITCODE) - see D:\build\ort_build.log" }
           Write-Host 'ONNX Runtime static build OK'
