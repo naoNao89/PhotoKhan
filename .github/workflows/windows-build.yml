@@ -115,6 +115,37 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "build_ort_baseline.ps1 failed (exit $LASTEXITCODE) - see D:\build\ort_build.log" }
           Write-Host 'ONNX Runtime static build OK'
 
+      - name: C2b - Bootstrap re2 static lib (idempotent, pinned to ORT deps.txt)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = 'D:\build\onnxruntime\build\Windows\Release\_deps\re2-build\Release\re2.lib'
+          if (Test-Path $target) {
+              Write-Host "re2.lib already present: $target - bootstrap skipped"
+              exit 0
+          }
+          # ort-sys 2.0.0-rc.15 unconditionally links static re2 from this path.
+          # ORT 1.31.0 pins google/re2 @ 2024-07-02 (cmake/deps.txt) but does not
+          # produce the lib in this layout, so build the pinned tag ourselves with
+          # the same MSVC toolchain / Release / MD config the ORT build uses.
+          $re2Root = 'D:\build\re2'
+          $src = Join-Path $re2Root 're2-2024-07-02'
+          $build = Join-Path $re2Root 'build'
+          if (-not (Test-Path $src)) {
+              New-Item -ItemType Directory -Force -Path $re2Root | Out-Null
+              & git clone --depth 1 --branch 2024-07-02 https://github.com/google/re2.git $src
+              if ($LASTEXITCODE -ne 0) { throw "re2 clone failed (exit $LASTEXITCODE)" }
+          }
+          cmake -S $src -B $build -G 'Visual Studio 17 2022' -A x64 -DCMAKE_BUILD_TYPE=Release -DRE2_BUILD_TESTING=OFF
+          if ($LASTEXITCODE -ne 0) { throw "re2 cmake configure failed (exit $LASTEXITCODE)" }
+          cmake --build $build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "re2 build failed (exit $LASTEXITCODE)" }
+          $re2Lib = Join-Path $build 'Release\re2.lib'
+          if (-not (Test-Path $re2Lib)) { throw "re2.lib not produced at $re2Lib" }
+          New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
+          Copy-Item $re2Lib $target -Force
+          Write-Host "Bootstrap OK: $target ($((Get-Item $target).Length) bytes)"
+
       - name: C3 - Guard static-link prerequisites
         shell: pwsh
         run: |
@@ -124,7 +155,7 @@ jobs:
           if (-not (Test-Path $staticLib)) { throw "static lib missing: $staticLib" }
           if (-not (Test-Path $depsDir)) { throw "_deps build tree missing: $depsDir" }
           $re2Lib = 'D:\build\onnxruntime\build\Windows\Release\_deps\re2-build\Release\re2.lib'
-          if (-not (Test-Path $re2Lib)) { throw "re2 static lib missing: $re2Lib" }
+          if (-not (Test-Path $re2Lib)) { throw "re2 static lib missing: $re2Lib (C2b bootstrap should have produced it)" }
           $abslBase = 'D:\build\onnxruntime\build\Windows\Release\_deps\abseil_cpp-build\absl\base\Release\absl_base.lib'
           if (-not (Test-Path $abslBase)) { throw "abseil static lib missing: $abslBase" }
           Write-Host "OK: $staticLib"
