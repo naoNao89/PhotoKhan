@@ -95,8 +95,9 @@ jobs:
           }
           cmake --version
 
-      - name: C1 - Cache ONNX Runtime build tree (Release + _deps)
-        uses: actions/cache@v4
+      - name: C1 - Restore ONNX Runtime build tree (Release + _deps)
+        id: C1
+        uses: actions/cache/restore@v4
         with:
           # Source clone stays outside the cache (re-cloned each run, ~1 min);
           # the cached build tree makes the subsequent build.bat run incremental.
@@ -162,6 +163,17 @@ jobs:
           Write-Host "OK: $depsDir (protobuf externals present)"
           Write-Host "OK: $re2Lib"
           Write-Host "OK: $abslBase"
+
+      # Explicit save (not the default post hook): actions/cache@v4 skips its
+      # post-save whenever the job fails, which would burn a full ORT rebuild on
+      # every iteration. Save runs right after the ORT stage, so later failures
+      # (Rust/tests/installer) still leave a reusable tree.
+      - name: C3b - Save ONNX Runtime build tree (only on restore miss)
+        if: steps.C1.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: 'D:\build\onnxruntime\build\Windows\Release'
+          key: ort-win-static-1.31.0-${{ hashFiles('build_ort_baseline.ps1') }}
 
       - name: D - Rust checks (fmt, lib tests, release build)
         working-directory: src-tauri

@@ -88,7 +88,7 @@ Steps:
 ## 4. CI reproduction
 
 - Triggers: `workflow_dispatch`, or push / pull_request against `main`.
-- The ONNX Runtime source + build tree at `D:\build\onnxruntime` is cached with key `ort-win-static-1.31.0-<sha256 of build_ort_baseline.ps1>` (restore key `ort-win-static-1.31.0-`). The first run builds ORT from scratch (~30–90 min); later runs restore the cache and the build step is incremental (fast).
+- The ONNX Runtime build tree at `D:\build\onnxruntime\build\Windows\Release` (libs + `_deps` externals) is cached with key `ort-win-static-1.31.0-<sha256 of build_ort_baseline.ps1>` (restore key `ort-win-static-1.31.0-`). The source clone is NOT cached (re-cloned each run, ~1 min). Restore and save are **separate steps**: the save runs right after the ORT stage (not the default post hook, which `actions/cache` skips whenever the job fails), so a failure later in the job still leaves the tree reusable and the next run is incremental rather than a ~40-min rebuild. The first run builds ORT from scratch; subsequent runs re-run `build.bat` incrementally against the restored tree.
 - Job env mirrors the local variables: `ORT_LIB_PATH`, `ORT_LIB_PROFILE=Release`, `ORT_PREFER_DYNAMIC_LINK=0`, `ORT_SKIP_DOWNLOAD=1`, `RUST_BACKTRACE=1`.
 - All validation steps throw on failure — the job fails on any missing required artifact; the installer is uploaded only when every assertion passed.
 

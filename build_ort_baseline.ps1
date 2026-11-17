@@ -247,19 +247,20 @@ try {
 
     Write-Host ""
     # ort-sys 2.0.0-rc.15 static link unconditionally links `re2` (static_link/mod.rs),
-    # expecting $ORT_LIB_PATH\_deps\re2-build\Release\re2.lib
+    # expecting $ORT_LIB_PATH\_deps\re2-build\Release\re2.lib. ORT 1.31's FetchContent
+    # declares re2 with EXCLUDE_FROM_ALL but the MSVC build never produces the lib;
+    # the workflow's C2b step bootstraps it. This check is informational only.
     $re2Build = Join-Path $depsDir 're2-build'
     $re2Lib = Join-Path $re2Build 'Release\re2.lib'
     if (Test-Path $re2Lib) {
         Write-Host "OK: $re2Lib ($((Get-Item $re2Lib).Length) bytes)" -ForegroundColor Green
     } else {
-        Write-Host "MISSING: $re2Lib" -ForegroundColor Yellow
+        Write-Host "re2.lib missing at $re2Lib (expected - C2b bootstrap will build it)" -ForegroundColor Yellow
         if (Test-Path $re2Build) {
             Write-Host "Contents of $re2Build (recursive *.lib, first 25):"
             Get-ChildItem -Path $re2Build -Recurse -File -Filter '*.lib' | Select-Object -First 25 |
                 ForEach-Object { Write-Host "  $($_.FullName)  ($($_.Length) bytes)" }
         }
-        Fail "re2.lib not found - ort-sys requires it for static linking. See layout above."
     }
 
     # ort-sys also links abseil components from _deps\abseil_cpp-build\absl\<component>\Release
