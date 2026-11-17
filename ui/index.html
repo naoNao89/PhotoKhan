@@ -1,0 +1,962 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>PhotoKhan – Trợ lý tạo ảnh thẻ</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+
+  <body>
+    <!-- Bộ biểu tượng dùng chung -->
+    <svg class="svg-sprite" aria-hidden="true" focusable="false">
+      <symbol id="i-home" viewBox="0 0 24 24">
+        <path d="M3.5 10.5 12 3.8l8.5 6.7" />
+        <path d="M5.5 9.2V20h13V9.2" />
+        <path d="M9.8 20v-5.6h4.4V20" />
+      </symbol>
+      <symbol id="i-history" viewBox="0 0 24 24">
+        <path d="M3.8 12a8.2 8.2 0 1 0 2.4-5.8" />
+        <path d="M3.8 4.5v4.2h4.2" />
+        <path d="M12 7.8V12l3 1.8" />
+      </symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3.1" />
+        <path d="M19.3 14.3a1.7 1.7 0 0 0 .34 1.87l.06.06-2.4 2.4-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56v.08h-3.4v-.08A1.7 1.7 0 0 0 9.9 18.2a1.7 1.7 0 0 0-1.87.34l-.06.06-2.4-2.4.06-.06a1.7 1.7 0 0 0 .34-1.87A1.7 1.7 0 0 0 4.4 13.2h-.08v-3.4h.08a1.7 1.7 0 0 0 1.56-1.03 1.7 1.7 0 0 0-.34-1.87l-.06-.06 2.4-2.4.06.06a1.7 1.7 0 0 0 1.87.34 1.7 1.7 0 0 0 1.03-1.56v-.08h3.4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06 2.4 2.4-.06.06a1.7 1.7 0 0 0-.34 1.87 1.7 1.7 0 0 0 1.56 1.03h.08v3.4h-.08a1.7 1.7 0 0 0-1.56 1.03Z" />
+      </symbol>
+      <symbol id="i-info" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="8.6" />
+        <path d="M12 10.6v5.1" />
+        <path d="M12 7.7h.01" />
+      </symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24">
+        <path d="M3.5 7.2h6l1.8 2h9.2v9.5a1.6 1.6 0 0 1-1.6 1.6H5.1a1.6 1.6 0 0 1-1.6-1.6Z" />
+        <path d="M3.5 7.2V5.6A1.6 1.6 0 0 1 5.1 4h3.6l1.8 2" />
+      </symbol>
+      <symbol id="i-play" viewBox="0 0 24 24">
+        <path d="M8.4 5.6 18 12l-9.6 6.4Z" />
+      </symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24">
+        <path d="M8.6 5.8v12.4M15.4 5.8v12.4" />
+      </symbol>
+      <symbol id="i-export" viewBox="0 0 24 24">
+        <path d="M12 3.8v10.4" />
+        <path d="m8.2 10.6 3.8 3.8 3.8-3.8" />
+        <path d="M4.2 15.4v3.4a1.8 1.8 0 0 0 1.8 1.8h12a1.8 1.8 0 0 0 1.8-1.8v-3.4" />
+      </symbol>
+      <symbol id="i-image" viewBox="0 0 24 24">
+        <rect x="3.6" y="4.6" width="16.8" height="14.8" rx="2.2" />
+        <circle cx="8.8" cy="9.6" r="1.5" />
+        <path d="m5.4 17.4 4.2-4.2 3 3 2.2-2.2 3.8 3.8" />
+      </symbol>
+      <symbol id="i-eye" viewBox="0 0 24 24">
+        <path d="M2.8 12S6.4 5.8 12 5.8 21.2 12 21.2 12 17.6 18.2 12 18.2 2.8 12 2.8 12Z" />
+        <circle cx="12" cy="12" r="2.7" />
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 24 24">
+        <path d="m5.2 12.4 4.4 4.4 9.2-9.6" />
+      </symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24">
+        <path d="M12 4.2 21 19.8H3Z" />
+        <path d="M12 9.4v4.4" />
+        <path d="M12 16.8h.01" />
+      </symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24">
+        <path d="M12 3.4 19.5 6v5.2c0 4.4-3.1 7.6-7.5 9.4-4.4-1.8-7.5-5-7.5-9.4V6Z" />
+        <path d="m8.8 12.1 2.2 2.2 4.2-4.4" />
+      </symbol>
+      <symbol id="i-camera" viewBox="0 0 24 24">
+        <path d="M4.2 8.4h3l1.4-2h6.8l1.4 2h3a1.6 1.6 0 0 1 1.6 1.6v7a1.6 1.6 0 0 1-1.6 1.6H4.2a1.6 1.6 0 0 1-1.6-1.6v-7a1.6 1.6 0 0 1 1.6-1.6Z" />
+        <circle cx="12" cy="13.4" r="3.2" />
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M20.2 12a8.2 8.2 0 1 1-2.4-5.8" />
+        <path d="M20.2 4.5v4.2H16" />
+      </symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24">
+        <path d="M4.6 7.2h14.8" />
+        <path d="M9.2 7.2V5.4a1.4 1.4 0 0 1 1.4-1.4h2.8a1.4 1.4 0 0 1 1.4 1.4v1.8" />
+        <path d="M6.4 7.2 7.3 20a1.6 1.6 0 0 0 1.6 1.5h6.2a1.6 1.6 0 0 0 1.6-1.5l.9-12.8" />
+      </symbol>
+      <symbol id="i-close" viewBox="0 0 24 24">
+        <path d="m6.4 6.4 11.2 11.2M17.6 6.4 6.4 17.6" />
+      </symbol>
+      <symbol id="i-arrow-left" viewBox="0 0 24 24">
+        <path d="M19 12H5" />
+        <path d="m10.6 6.4-5.6 5.6 5.6 5.6" />
+      </symbol>
+      <symbol id="i-arrow-right" viewBox="0 0 24 24">
+        <path d="M5 12h14" />
+        <path d="m13.4 6.4 5.6 5.6-5.6 5.6" />
+      </symbol>
+      <symbol id="i-save" viewBox="0 0 24 24">
+        <path d="M4.2 4.2h11.4l4.2 4.2v11.4H4.2Z" />
+        <path d="M7.8 4.2v5.2h7.2V4.2" />
+        <path d="M7.8 19.8v-6h8.4v6" />
+      </symbol>
+      <symbol id="i-external" viewBox="0 0 24 24">
+        <path d="M13.6 4.2h6.2v6.2" />
+        <path d="M19.8 4.2 11 13" />
+        <path d="M18 14v4.6a1.6 1.6 0 0 1-1.6 1.6H5.8a1.6 1.6 0 0 1-1.6-1.6V8a1.6 1.6 0 0 1 1.6-1.6H10" />
+      </symbol>
+      <symbol id="i-sparkle" viewBox="0 0 24 24">
+        <path d="M12 3.4 13.9 9l5.6 1.9-5.6 1.9L12 18.4l-1.9-5.6L4.5 10.9 10.1 9Z" />
+      </symbol>
+      <symbol id="i-user" viewBox="0 0 24 24">
+        <circle cx="12" cy="8.2" r="3.6" />
+        <path d="M4.8 20.2c.6-3.8 3.4-6 7.2-6s6.6 2.2 7.2 6" />
+      </symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24">
+        <rect x="4" y="4" width="6.4" height="6.4" rx="1" />
+        <rect x="13.6" y="4" width="6.4" height="6.4" rx="1" />
+        <rect x="4" y="13.6" width="6.4" height="6.4" rx="1" />
+        <rect x="13.6" y="13.6" width="6.4" height="6.4" rx="1" />
+      </symbol>
+    </svg>
+
+    <div class="app-shell">
+      <!-- Thanh điều hướng trái -->
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-camera" /></svg>
+          </div>
+          <div class="brand-text">
+            <strong>PhotoKhan</strong>
+            <span>Ảnh thẻ chuẩn Việt Nam</span>
+          </div>
+        </div>
+
+        <nav class="main-nav" aria-label="Điều hướng chính">
+          <button class="nav-item is-active" type="button" data-view="home">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-home" /></svg>
+            <span>Trang chủ</span>
+          </button>
+          <button class="nav-item" type="button" data-view="history">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-history" /></svg>
+            <span>Lịch sử</span>
+          </button>
+          <button class="nav-item" type="button" data-view="settings">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-settings" /></svg>
+            <span>Cài đặt</span>
+          </button>
+          <button class="nav-item" type="button" data-view="about">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-info" /></svg>
+            <span>Giới thiệu</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-foot">
+          <div class="offline-card">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-shield" /></svg>
+            <div>
+              <strong>100% trên máy</strong>
+              <span>Không gửi ảnh ra ngoài</span>
+            </div>
+          </div>
+          <div class="sidebar-meta">
+            <span>Phiên bản 0.1.0</span>
+            <span id="backendBadge" class="backend-badge">Chế độ mô phỏng</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Khu vực làm việc giữa -->
+      <main class="workspace" id="workspace">
+        <header class="topbar">
+          <div>
+            <h1 id="viewTitle">Trang chủ</h1>
+            <p id="viewSubtitle">Chọn thư mục, chọn preset rồi bấm Bắt đầu xử lý.</p>
+          </div>
+          <div class="status-pill" id="statusPill" data-tone="ready" role="status" aria-live="polite">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="statusText">Sẵn sàng</span>
+          </div>
+        </header>
+
+        <div class="view" id="view-home">
+          <div class="notice">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-alert" /></svg>
+            <p><strong>Lưu ý:</strong> Kiểm tra quy định của nơi nhận hồ sơ trước khi nộp.</p>
+          </div>
+
+          <div class="demo-banner hidden" id="demoBanner">
+            <div class="demo-banner-text">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#i-info" /></svg>
+              <p>Đang dùng dữ liệu mẫu vì chưa kết nối backend. Mọi thao tác chỉ diễn ra trên trình duyệt.</p>
+            </div>
+            <button class="btn btn-tiny btn-ghost" type="button" id="btnClearDemo">Xóa dữ liệu mẫu</button>
+          </div>
+
+          <section class="card">
+            <div class="card-head">
+              <div>
+                <h2>Thiết lập lô ảnh</h2>
+                <p>Chọn nơi chứa ảnh gốc và nơi lưu ảnh thẻ.</p>
+              </div>
+              <span class="step-chip">1</span>
+            </div>
+
+            <div class="folder-grid">
+              <div class="folder-card">
+                <span class="folder-icon"><svg class="icon" viewBox="0 0 24 24"><use href="#i-folder" /></svg></span>
+                <div class="folder-meta">
+                  <span>Thư mục ảnh gốc</span>
+                  <strong id="inputDirText">Chưa chọn</strong>
+                </div>
+                <button class="btn btn-ghost btn-tiny" type="button" id="btnInputDir">Chọn…</button>
+              </div>
+              <div class="folder-card">
+                <span class="folder-icon"><svg class="icon" viewBox="0 0 24 24"><use href="#i-export" /></svg></span>
+                <div class="folder-meta">
+                  <span>Thư mục lưu ảnh</span>
+                  <strong id="outputDirText">Chưa chọn</strong>
+                </div>
+                <button class="btn btn-ghost btn-tiny" type="button" id="btnOutputDir">Chọn…</button>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <div class="field">
+                <label for="presetSelect">Loại ảnh thẻ</label>
+                <select id="presetSelect"></select>
+                <small id="presetHint">Ảnh 3×4 cm · 354 × 472 px · nền xanh dương.</small>
+              </div>
+
+              <div class="field">
+                <span class="field-label">Màu nền</span>
+                <div class="swatches" id="bgSwatches" role="group" aria-label="Chọn nhanh màu nền"></div>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <div class="field">
+                <div class="switch-row">
+                  <div>
+                    <span class="field-label">Ghép áo</span>
+                    <small>Chỉ thay vùng áo, không đụng mặt và tóc.</small>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox" id="outfitToggle" />
+                    <span class="switch-track"><span class="switch-thumb"></span></span>
+                    <span class="sr-only">Bật ghép áo</span>
+                  </label>
+                </div>
+                <select id="outfitSelect" disabled>
+                  <option value="ao-trang">Áo trắng học sinh</option>
+                  <option value="so-mi">Áo sơ mi công sở</option>
+                  <option value="vest">Áo vest</option>
+                </select>
+              </div>
+
+              <div class="field custom-size hidden" id="customSizeField">
+                <span class="field-label">Kích thước tùy chỉnh</span>
+                <div class="inline-fields">
+                  <label>
+                    <span>Rộng (mm)</span>
+                    <input type="number" id="customWidth" min="10" max="150" step="0.5" value="35" />
+                  </label>
+                  <label>
+                    <span>Cao (mm)</span>
+                    <input type="number" id="customHeight" min="10" max="200" step="0.5" value="45" />
+                  </label>
+                </div>
+                <label class="range-field">
+                  <span>Tỷ lệ mặt <output id="faceRatioOut">75%</output></span>
+                  <input type="range" id="faceRatio" min="50" max="85" step="1" value="75" />
+                </label>
+              </div>
+            </div>
+
+            <div class="preset-note">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#i-info" /></svg>
+              <span id="presetNoteText">Mặt chiếm 70–80% chiều cao ảnh. Tâm mắt đặt ở 55% chiều cao tính từ đáy.</span>
+            </div>
+          </section>
+
+          <section class="card queue-card">
+            <div class="card-head">
+              <div>
+                <h2>Hàng đợi</h2>
+                <p id="queueSummary">Chưa có ảnh nào trong lô.</p>
+              </div>
+              <div class="queue-tools">
+                <span class="mini-lottie" id="queueLottie" aria-hidden="true"></span>
+                <button class="btn btn-ghost btn-tiny" type="button" id="btnPauseQueue" disabled>
+                  <svg class="icon" viewBox="0 0 24 24"><use href="#i-pause" /></svg>
+                  <span id="pauseLabel">Tạm dừng</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="progress-block">
+              <div class="progress-line">
+                <span id="progressLabel">Chưa bắt đầu</span>
+                <span class="progress-percent" id="progressPercent">0%</span>
+              </div>
+              <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar">
+                <div class="progress-fill" id="progressFill"></div>
+              </div>
+              <div class="progress-foot">
+                <span id="doneText">0/0 ảnh</span>
+                <span id="etaText">Sẵn sàng khi bạn bấm Bắt đầu.</span>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table class="queue-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Ảnh</th>
+                    <th scope="col">Trạng thái</th>
+                    <th scope="col">Thông báo</th>
+                    <th scope="col"><span class="sr-only">Xem trước</span></th>
+                  </tr>
+                </thead>
+                <tbody id="queueBody"></tbody>
+              </table>
+              <div class="queue-empty" id="queueEmpty">
+                <div class="queue-empty-icon"><svg class="icon" viewBox="0 0 24 24"><use href="#i-image" /></svg></div>
+                <strong>Chưa có ảnh trong hàng đợi</strong>
+                <p>Bấm <b>Chọn ảnh</b> để chọn thư mục ảnh gốc, hoặc dùng dữ liệu mẫu để xem thử giao diện.</p>
+                <button class="btn btn-ghost btn-tiny" type="button" id="btnLoadDemo">Dùng dữ liệu mẫu</button>
+              </div>
+            </div>
+
+            <div class="queue-legend">
+              <span><i class="legend-dot tone-wait"></i>Chờ xử lý</span>
+              <span><i class="legend-dot tone-busy"></i>Đang xử lý</span>
+              <span><i class="legend-dot tone-ok"></i>Đạt</span>
+              <span><i class="legend-dot tone-warn"></i>Cần chụp lại</span>
+              <span><i class="legend-dot tone-error"></i>Lỗi</span>
+              <span><i class="legend-dot tone-done"></i>Đã xuất</span>
+            </div>
+          </section>
+        </div>
+        <div class="view hidden" id="view-history">
+          <section class="card">
+            <div class="card-head">
+              <div>
+                <h2>Lịch sử xuất ảnh</h2>
+                <p>Danh sách các lô đã xuất, ngày giờ, số ảnh và thư mục đầu ra.</p>
+              </div>
+              <button class="btn btn-ghost btn-tiny" type="button" id="btnClearHistory">
+                <svg class="icon" viewBox="0 0 24 24"><use href="#i-trash" /></svg>
+                Xóa lịch sử
+              </button>
+            </div>
+            <div class="history-list" id="historyList"></div>
+            <div class="queue-empty" id="historyEmpty">
+              <div class="queue-empty-icon"><svg class="icon" viewBox="0 0 24 24"><use href="#i-history" /></svg></div>
+              <strong>Chưa có lô ảnh nào được xuất</strong>
+              <p>Sau khi bấm <b>Xuất ảnh</b>, lô ảnh sẽ xuất hiện tại đây để bạn mở lại thư mục đầu ra.</p>
+            </div>
+          </section>
+        </div>
+
+        <div class="view hidden" id="view-settings">
+          <div class="settings-toolbar">
+            <div class="segmented" role="tablist" aria-label="Nhóm cài đặt">
+              <button class="is-active" type="button" data-settings-tab="general" role="tab" aria-selected="true">Thường</button>
+              <button type="button" data-settings-tab="advanced" role="tab" aria-selected="false">Nâng cao</button>
+            </div>
+            <div class="settings-actions">
+              <button class="btn btn-ghost btn-tiny" type="button" id="btnResetSettings">Khôi phục mặc định</button>
+              <button class="btn btn-primary btn-tiny" type="button" id="btnSaveSettings">
+                <svg class="icon" viewBox="0 0 24 24"><use href="#i-save" /></svg>
+                Lưu cài đặt
+              </button>
+            </div>
+          </div>
+
+          <section class="card settings-panel" data-settings-panel="general">
+            <div class="section-head">
+              <h2>Thiết lập thường dùng</h2>
+              <p>Các lựa chọn này được áp dụng cho lô ảnh tiếp theo.</p>
+            </div>
+
+            <div class="settings-block">
+              <h3>Thư mục mặc định</h3>
+              <div class="folder-card">
+                <span class="folder-icon"><svg class="icon" viewBox="0 0 24 24"><use href="#i-folder" /></svg></span>
+                <div class="folder-meta">
+                  <span>Thư mục ảnh gốc</span>
+                  <strong id="setInputDirText">Chưa chọn</strong>
+                </div>
+                <button class="btn btn-ghost btn-tiny" type="button" id="btnSetInputDir">Chọn…</button>
+              </div>
+              <div class="folder-card">
+                <span class="folder-icon"><svg class="icon" viewBox="0 0 24 24"><use href="#i-export" /></svg></span>
+                <div class="folder-meta">
+                  <span>Thư mục lưu ảnh</span>
+                  <strong id="setOutputDirText">Chưa chọn</strong>
+                </div>
+                <button class="btn btn-ghost btn-tiny" type="button" id="btnSetOutputDir">Chọn…</button>
+              </div>
+            </div>
+
+            <div class="settings-grid">
+              <div class="field">
+                <label for="setDefaultPreset">Preset mặc định</label>
+                <select id="setDefaultPreset"></select>
+              </div>
+              <div class="field">
+                <label for="setExportFormat">Định dạng xuất</label>
+                <select id="setExportFormat">
+                  <option value="jpg">JPG · chất lượng 95, DPI 300</option>
+                  <option value="png">PNG · không nén mất dữ liệu</option>
+                  <option value="pdf">PDF · bố cục in A4</option>
+                </select>
+                <small>Lưu trên giao diện; hợp đồng backend chưa có trường định dạng.</small>
+              </div>
+            </div>
+
+            <div class="settings-grid">
+              <div class="field">
+                <span class="field-label">Màu nền mặc định</span>
+                <div class="swatches" id="setBgSwatches" role="group" aria-label="Màu nền mặc định"></div>
+                <div class="inline-fields">
+                  <label>
+                    <span>Mã HEX</span>
+                    <input type="text" id="setDefaultBgHex" maxlength="7" placeholder="#FFFFFF" spellcheck="false" />
+                  </label>
+                  <button class="btn btn-ghost btn-tiny" type="button" id="btnApplySetBg">Áp dụng</button>
+                </div>
+              </div>
+              <div class="field">
+                <label for="setNameTemplate">Mẫu tên file xuất</label>
+                <input type="text" id="setNameTemplate" spellcheck="false" />
+                <small>Biến hỗ trợ: <code>{stt}</code>, <code>{tên_gốc}</code>, <code>{preset}</code>, <code>{ngày}</code>, <code>{màu}</code>.</small>
+              </div>
+            </div>
+
+            <div class="settings-block">
+              <h3>Ghi chú nguồn preset</h3>
+              <p class="body-text">
+                Thông số preset là bản nháp tổng hợp từ hướng dẫn của các cơ quan tiếp nhận. Phần mềm không tự chọn thay bạn.
+                Hãy đối chiếu lại quy định của nơi nhận hồ sơ trước khi nộp.
+              </p>
+            </div>
+          </section>
+
+          <section class="card settings-panel hidden" data-settings-panel="advanced">
+            <div class="section-head">
+              <h2>Cài đặt nâng cao</h2>
+              <p>Dành cho người đã quen với phần mềm. Thay đổi được lưu khi bấm Lưu cài đặt.</p>
+            </div>
+
+            <details class="settings-group" open>
+              <summary><span>Hiệu năng</span><svg class="icon" viewBox="0 0 24 24"><use href="#i-settings" /></svg></summary>
+              <div class="settings-body">
+                <label class="range-field">
+                  <span>Giới hạn CPU <output id="setCpuLimitOut">20%</output></span>
+                  <input type="range" id="setCpuLimit" min="5" max="60" step="5" value="20" />
+                  <small>Phần mềm tự nghỉ giữa các ảnh để giữ mức CPU thấp.</small>
+                </label>
+                <label class="range-field">
+                  <span>Số luồng xử lý <output id="setThreadLimitOut">Tự động</output></span>
+                  <input type="range" id="setThreadLimit" min="0" max="8" step="1" value="0" />
+                  <small>0 = tự tính theo số nhân CPU, tối đa 20% công suất.</small>
+                </label>
+                <div class="field">
+                  <label for="setPollInterval">Tần suất quét thư mục</label>
+                  <select id="setPollInterval">
+                    <option value="2">2 giây</option>
+                    <option value="5">5 giây</option>
+                    <option value="10">10 giây</option>
+                    <option value="30">30 giây</option>
+                  </select>
+                </div>
+                <label class="check-row">
+                  <input type="checkbox" id="setStartWithWindows" />
+                  <span>Khởi động cùng Windows</span>
+                </label>
+                <label class="check-row">
+                  <input type="checkbox" id="setMinimizeToTray" />
+                  <span>Thu nhỏ xuống khay khi đóng cửa sổ</span>
+                </label>
+              </div>
+            </details>
+
+            <details class="settings-group">
+              <summary><span>Tự tạm dừng</span><svg class="icon" viewBox="0 0 24 24"><use href="#i-pause" /></svg></summary>
+              <div class="settings-body">
+                <label class="check-row">
+                  <input type="checkbox" id="setPauseBusy" />
+                  <span>Khi người dùng đang làm việc</span>
+                </label>
+                <p class="helper">Chỉ tiếp tục sau 10 giây nhàn rỗi hoặc khi CPU hệ thống dưới 50%.</p>
+                <label class="check-row">
+                  <input type="checkbox" id="setPauseBattery" />
+                  <span>Khi dùng pin và pin dưới 30%</span>
+                </label>
+              </div>
+            </details>
+
+            <details class="settings-group">
+              <summary><span>AI &amp; căn chỉnh</span><svg class="icon" viewBox="0 0 24 24"><use href="#i-sparkle" /></svg></summary>
+              <div class="settings-body">
+                <label class="range-field">
+                  <span>Độ chính xác tách nền <output id="setMatteOut">60</output></span>
+                  <input type="range" id="setMatteAccuracy" min="0" max="100" step="5" value="60" />
+                  <small>Càng cao càng bám sát tóc nhưng có thể chậm hơn.</small>
+                </label>
+                <label class="check-row">
+                  <input type="checkbox" id="setAlignHead" />
+                  <span>Căn thẳng đầu theo hai mắt</span>
+                </label>
+                <label class="range-field">
+                  <span>Tâm mắt tính từ đáy ảnh <output id="setEyeLevelOut">55%</output></span>
+                  <input type="range" id="setEyeLevel" min="50" max="65" step="1" value="55" />
+                </label>
+                <div class="info-line muted">
+                  <svg class="icon" viewBox="0 0 24 24"><use href="#i-info" /></svg>
+                  <span>Làm đẹp da và chỉnh sửa khuôn mặt không có trong phiên bản này.</span>
+                </div>
+              </div>
+            </details>
+
+            <details class="settings-group">
+              <summary><span>Template áo &amp; màu nền</span><svg class="icon" viewBox="0 0 24 24"><use href="#i-user" /></svg></summary>
+              <div class="settings-body">
+                <div class="field">
+                  <span class="field-label">Thêm file PNG áo / cà vạt</span>
+                  <div class="inline-fields">
+                    <button class="btn btn-ghost btn-tiny" type="button" id="btnChooseOutfitTemplate">
+                      <svg class="icon" viewBox="0 0 24 24"><use href="#i-image" /></svg>
+                      Chọn file PNG
+                    </button>
+                    <span class="file-name" id="outfitTemplateName">Chưa chọn file</span>
+                  </div>
+                  <small>File có kênh alpha, chỉ dùng trên máy này. Chức năng sẽ hoạt động khi backend hỗ trợ.</small>
+                </div>
+                <div class="field">
+                  <label for="setCustomBgHex">Mã HEX màu nền tùy chỉnh</label>
+                  <div class="inline-fields">
+                    <input type="text" id="setCustomBgHex" maxlength="7" placeholder="#FFFFFF" spellcheck="false" />
+                    <button class="btn btn-ghost btn-tiny" type="button" id="btnUseCustomBg">Dùng màu này</button>
+                  </div>
+                </div>
+              </div>
+            </details>
+
+            <details class="settings-group">
+              <summary><span>Bảo mật &amp; log</span><svg class="icon" viewBox="0 0 24 24"><use href="#i-shield" /></svg></summary>
+              <div class="settings-body">
+                <label class="check-row">
+                  <input type="checkbox" id="setRemoveOriginal" />
+                  <span>Tự động xóa ảnh gốc sau khi xử lý thành công</span>
+                </label>
+                <div class="warning-box" id="removeOriginalWarning">
+                  <svg class="icon" viewBox="0 0 24 24"><use href="#i-alert" /></svg>
+                  <p>Cảnh báo: ảnh gốc sẽ bị xóa vĩnh viễn sau khi xuất thành công. Chỉ bật khi bạn đã sao lưu dữ liệu.</p>
+                </div>
+                <label class="check-row">
+                  <input type="checkbox" id="setSecureDelete" />
+                  <span>Xóa an toàn bằng ghi đè (có thể không hiệu quả trên SSD)</span>
+                </label>
+                <label class="check-row">
+                  <input type="checkbox" id="setLogEnabled" />
+                  <span>Cho phép ghi log chẩn đoán cục bộ</span>
+                </label>
+                <p class="helper">Log không chứa nội dung ảnh và không chứa tên file gốc ở mức thông tin.</p>
+                <div class="inline-fields">
+                  <button class="btn btn-ghost btn-tiny" type="button" id="btnOpenLogs">
+                    <svg class="icon" viewBox="0 0 24 24"><use href="#i-folder" /></svg>
+                    Mở thư mục log
+                  </button>
+                  <button class="btn btn-danger-ghost btn-tiny" type="button" id="btnDeleteLogs">
+                    <svg class="icon" viewBox="0 0 24 24"><use href="#i-trash" /></svg>
+                    Xóa toàn bộ log
+                  </button>
+                </div>
+              </div>
+            </details>
+
+            <details class="settings-group">
+              <summary><span>Xác nhận dữ liệu trẻ em</span><svg class="icon" viewBox="0 0 24 24"><use href="#i-check" /></svg></summary>
+              <div class="settings-body">
+                <p class="body-text" id="consentInfo">Chưa có xác nhận.</p>
+                <button class="btn btn-ghost btn-tiny" type="button" id="btnReopenWizardSettings">Mở lại hướng dẫn lần đầu</button>
+              </div>
+            </details>
+
+            <p class="helper footnote">
+              Một số tùy chọn giao diện chưa có trong CONTRACT.md (định dạng xuất, khởi động cùng Windows, độ chính xác tách nền…)
+              được lưu cục bộ trên máy và không gửi sang backend.
+            </p>
+          </section>
+        </div>
+
+        <div class="view hidden" id="view-about">
+          <section class="about-hero card">
+            <div class="about-mark"><svg class="icon" viewBox="0 0 24 24"><use href="#i-camera" /></svg></div>
+            <div>
+              <h2>PhotoKhan 0.1.0</h2>
+              <p>Trợ lý tạo ảnh thẻ tự động chuẩn Việt Nam. Chạy hoàn toàn trên máy, miễn phí, không watermark, không giới hạn lượt dùng.</p>
+              <div class="hero-tags">
+                <span>100% offline sau khi có model</span>
+                <span>Không tài khoản</span>
+                <span>Không quảng cáo</span>
+              </div>
+            </div>
+          </section>
+
+          <div class="two-col">
+            <section class="card">
+              <div class="section-head">
+                <h2>Quyền riêng tư</h2>
+              </div>
+              <ul class="feature-list">
+                <li><svg class="icon" viewBox="0 0 24 24"><use href="#i-check" /></svg><span>Ảnh gốc và ảnh xuất chỉ nằm trên máy của bạn.</span></li>
+                <li><svg class="icon" viewBox="0 0 24 24"><use href="#i-check" /></svg><span>Không có lời gọi mạng ngoài việc tải model (có thể tắt và copy thủ công).</span></li>
+                <li><svg class="icon" viewBox="0 0 24 24"><use href="#i-check" /></svg><span>Không telemetry, không gửi dữ liệu chẩn đoán ra ngoài.</span></li>
+                <li><svg class="icon" viewBox="0 0 24 24"><use href="#i-check" /></svg><span>Ảnh tạm được xóa sau khi xuất và khi tắt ứng dụng.</span></li>
+              </ul>
+            </section>
+
+            <section class="card">
+              <div class="section-head">
+                <h2>Hướng dẫn lần đầu</h2>
+              </div>
+              <p class="body-text">Bạn có thể mở lại 4 bước thiết lập ban đầu: xác nhận dữ liệu, chọn thư mục, chọn preset và xem hướng dẫn chụp ảnh.</p>
+              <button class="btn btn-primary btn-tiny" type="button" id="btnReopenWizardAbout">
+                <svg class="icon" viewBox="0 0 24 24"><use href="#i-refresh" /></svg>
+                Mở lại hướng dẫn
+              </button>
+              <p class="helper" id="aboutConsentText">Chưa có xác nhận dữ liệu.</p>
+            </section>
+          </div>
+
+          <section class="card">
+            <div class="section-head">
+              <h2>Giấy phép thành phần</h2>
+              <p>Chỉ dùng model có giấy phép MIT/Apache-2.0 hoặc tương đương. Cần xác minh lại giấy phép trọng số trước khi phát hành.</p>
+            </div>
+            <div class="license-grid">
+              <div class="license-item"><strong>YuNet</strong><span>Phát hiện mặt + 5 điểm mốc · MIT</span></div>
+              <div class="license-item"><strong>ISNet</strong><span>Tách nền mặc định · Apache-2.0 (cần xác minh trọng số)</span></div>
+              <div class="license-item"><strong>U2-Netp</strong><span>Tách nền cho máy yếu · Apache-2.0 (cần xác minh)</span></div>
+              <div class="license-item"><strong>BiRefNet</strong><span>Tách nền tùy chọn · MIT (cần xác minh)</span></div>
+              <div class="license-item"><strong>Lottie Web</strong><span>Hoạt hình giao diện · MIT</span></div>
+              <div class="license-item"><strong>Tauri 2</strong><span>Khung ứng dụng · MIT / Apache-2.0</span></div>
+            </div>
+            <p class="helper">Không dùng RMBG-1.4 (CC BY-NC), InsightFace hoặc human parsing trong sản phẩm này.</p>
+          </section>
+
+          <section class="card">
+            <div class="section-head">
+              <h2>Nguồn preset &amp; điều khoản</h2>
+            </div>
+            <p class="body-text">
+              Thông số preset được tổng hợp từ hướng dẫn của các cơ quan tiếp nhận hồ sơ và có thể khác nhau giữa các nơi.
+              Phần mềm không tự chọn preset thay bạn. Hãy kiểm tra quy định của nơi nhận hồ sơ trước khi nộp.
+            </p>
+            <div class="terms-box">
+              Ảnh được tạo bởi phần mềm, người dùng chịu trách nhiệm kiểm tra trước khi nộp.
+            </div>
+          </section>
+        </div>
+      </main>
+      <!-- Khung xem trước bên phải -->
+      <aside class="preview-panel" aria-label="Khung xem trước">
+        <div class="panel-head">
+          <div>
+            <h2>Xem trước</h2>
+            <p>So sánh ảnh gốc và kết quả.</p>
+          </div>
+          <span class="badge" id="previewBadge">Chưa chọn ảnh</span>
+        </div>
+
+        <div class="preview-file" id="previewFile">Chọn một ảnh trong hàng đợi để xem trước.</div>
+
+        <div class="preview-block">
+          <div class="preview-label">
+            <span>Ảnh gốc</span>
+            <span class="mono muted" id="originalSize"></span>
+          </div>
+          <div class="stage" id="stage">
+            <div class="stage-empty" id="stageEmpty">
+              <div class="stage-illustration" aria-hidden="true">
+                <svg viewBox="0 0 160 120">
+                  <rect x="18" y="14" width="124" height="92" rx="10" fill="#eef4ff" stroke="#c7d7f5" stroke-width="2" />
+                  <circle cx="80" cy="52" r="17" fill="#d7e4fb" />
+                  <path d="M50 92c4-15 15-23 30-23s26 8 30 23Z" fill="#d7e4fb" />
+                  <path d="M28 24h20M28 32h12" stroke="#c7d7f5" stroke-width="2.5" stroke-linecap="round" />
+                </svg>
+              </div>
+              <p>Chưa có ảnh để xem trước</p>
+            </div>
+            <div class="crop-wrap hidden" id="cropWrap">
+              <img id="originalImg" alt="Ảnh gốc đang chọn" draggable="false" />
+              <div class="crop-box" id="cropBox" tabindex="0" role="application" aria-label="Khung cắt ảnh. Dùng phím mũi tên để di chuyển.">
+                <span class="crop-grid crop-grid-v1"></span>
+                <span class="crop-grid crop-grid-v2"></span>
+                <span class="crop-grid crop-grid-h1"></span>
+                <span class="crop-grid crop-grid-h2"></span>
+                <span class="crop-corner crop-corner-tl"></span>
+                <span class="crop-corner crop-corner-tr"></span>
+                <span class="crop-corner crop-corner-bl"></span>
+                <span class="crop-corner crop-corner-br"></span>
+                <span class="crop-handle" id="cropHandle" title="Kéo để đổi kích thước khung"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="preview-block">
+          <div class="preview-label">
+            <span>Kết quả</span>
+            <span class="mono muted" id="resultSize"></span>
+          </div>
+          <div class="result-stage" id="resultStage">
+            <canvas id="resultCanvas" hidden></canvas>
+            <img id="resultImg" class="result-img hidden" alt="Kết quả xử lý" />
+            <div class="result-placeholder" id="resultPlaceholder">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#i-image" /></svg>
+              <span>Chưa có kết quả</span>
+            </div>
+            <span class="mock-badge hidden" id="mockBadge">Mô phỏng</span>
+          </div>
+        </div>
+
+        <div class="zoom-row">
+          <label for="zoomRange">Thu phóng khung cắt</label>
+          <input type="range" id="zoomRange" min="1" max="3" step="0.05" value="1" />
+          <output id="zoomOut">1.0×</output>
+        </div>
+
+        <div class="preview-group">
+          <span class="field-label">Màu nền</span>
+          <div class="swatches compact" id="previewSwatches" role="group" aria-label="Màu nền xem trước"></div>
+        </div>
+
+        <div class="preview-options">
+          <label class="switch-row compact">
+            <div>
+              <span class="field-label">Tách nền</span>
+              <small id="matteHint">Đang bật</small>
+            </div>
+            <span class="switch">
+              <input type="checkbox" id="matteToggle" checked />
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+              <span class="sr-only">Bật tách nền</span>
+            </span>
+          </label>
+          <div class="field">
+            <label for="previewOutfit">Mẫu áo</label>
+            <select id="previewOutfit" disabled>
+              <option value="ao-trang">Áo trắng học sinh</option>
+              <option value="so-mi">Áo sơ mi công sở</option>
+              <option value="vest">Áo vest</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="preview-actions">
+          <button class="btn btn-soft btn-tiny" type="button" id="btnReprocess" disabled>
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-refresh" /></svg>
+            Xử lý lại
+          </button>
+          <button class="btn btn-danger-ghost btn-tiny" type="button" id="btnRemoveJob" disabled>
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-trash" /></svg>
+            Loại bỏ
+          </button>
+        </div>
+
+        <p class="preview-hint">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-info" /></svg>
+          Dùng phím mũi tên để di chuyển khung, Enter để xuất ảnh.
+        </p>
+      </aside>
+    </div>
+    <!-- Thanh nút dưới cùng -->
+    <footer class="bottombar">
+      <div class="bottom-status">
+        <span class="status-dot" aria-hidden="true"></span>
+        <strong id="bottomStatusText">Sẵn sàng</strong>
+        <span class="bottom-divider" aria-hidden="true"></span>
+        <span id="bottomQueueText">Chưa có ảnh trong lô</span>
+      </div>
+      <div class="bottom-actions">
+        <button class="btn btn-soft" type="button" id="btnChooseImages">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-folder" /></svg>
+          Chọn ảnh
+        </button>
+        <button class="btn btn-primary" type="button" id="btnStartQueue">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-play" /></svg>
+          <span id="btnStartLabel">Bắt đầu xử lý</span>
+        </button>
+        <button class="btn btn-accent" type="button" id="btnExportBatch">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-export" /></svg>
+          Xuất ảnh
+        </button>
+      </div>
+    </footer>
+
+    <!-- Wizard lần đầu -->
+    <div class="modal-layer hidden" id="wizardLayer" aria-hidden="true">
+      <div class="wizard-dialog" role="dialog" aria-modal="true" aria-label="Thiết lập lần đầu">
+        <header class="wizard-head">
+          <div class="wizard-brand">
+            <span class="brand-mark small" aria-hidden="true">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#i-camera" /></svg>
+            </span>
+            <div>
+              <strong>Thiết lập lần đầu</strong>
+              <span>Chỉ mất khoảng một phút</span>
+            </div>
+          </div>
+          <button class="icon-btn" type="button" id="wizardClose" aria-label="Đóng hướng dẫn">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-close" /></svg>
+          </button>
+        </header>
+
+        <div class="wizard-steps" id="wizardSteps">
+          <div class="wizard-step-chip is-active" data-step-chip="0"><span>1</span><b>Xác nhận</b></div>
+          <div class="wizard-step-chip" data-step-chip="1"><span>2</span><b>Thư mục</b></div>
+          <div class="wizard-step-chip" data-step-chip="2"><span>3</span><b>Preset</b></div>
+          <div class="wizard-step-chip" data-step-chip="3"><span>4</span><b>Chụp ảnh</b></div>
+        </div>
+
+        <div class="wizard-content" id="wizardContent">
+          <section class="wizard-step" data-step="0">
+            <div class="wizard-badge"><svg class="icon" viewBox="0 0 24 24"><use href="#i-shield" /></svg></div>
+            <h2>Xác nhận dữ liệu</h2>
+            <p class="lead">Trước khi xử lý ảnh, bạn cần xác nhận trách nhiệm về dữ liệu hình ảnh.</p>
+            <label class="consent-box" for="consentCheck">
+              <input type="checkbox" id="consentCheck" />
+              <span class="consent-check" aria-hidden="true">
+                <svg class="icon" viewBox="0 0 24 24"><use href="#i-check" /></svg>
+              </span>
+              <span class="consent-text">
+                Tôi xác nhận đã có sự đồng ý của phụ huynh/nhà trường hoặc tuân thủ quy chế sử dụng dữ liệu
+                để xử lý ảnh nội bộ.
+              </span>
+            </label>
+            <div class="wizard-callout">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#i-info" /></svg>
+              <p>
+                Phần mềm chạy hoàn toàn trên máy. Ảnh không được gửi ra ngoài. Ô xác nhận này không thay thế
+                quy trình đồng ý của nhà trường.
+              </p>
+            </div>
+            <p class="field-error hidden" id="consentError">Bạn cần tích vào ô xác nhận để tiếp tục.</p>
+            <p class="consent-meta hidden" id="consentMeta"></p>
+          </section>
+
+          <section class="wizard-step hidden" data-step="1">
+            <div class="wizard-badge"><svg class="icon" viewBox="0 0 24 24"><use href="#i-folder" /></svg></div>
+            <h2>Chọn thư mục</h2>
+            <p class="lead">Chọn nơi chứa ảnh gốc và nơi lưu ảnh thẻ. Bạn có thể đổi lại bất cứ lúc nào.</p>
+
+            <div class="wizard-folder">
+              <span class="folder-icon"><svg class="icon" viewBox="0 0 24 24"><use href="#i-image" /></svg></span>
+              <div class="folder-meta">
+                <span>Thư mục ảnh gốc (Input)</span>
+                <input type="text" id="wizInputDir" readonly placeholder="Chưa chọn thư mục" />
+              </div>
+              <button class="btn btn-ghost btn-tiny" type="button" id="wizChooseInput">Chọn…</button>
+            </div>
+
+            <div class="wizard-folder">
+              <span class="folder-icon"><svg class="icon" viewBox="0 0 24 24"><use href="#i-export" /></svg></span>
+              <div class="folder-meta">
+                <span>Thư mục lưu ảnh (Output)</span>
+                <input type="text" id="wizOutputDir" readonly placeholder="Chưa chọn thư mục" />
+              </div>
+              <button class="btn btn-ghost btn-tiny" type="button" id="wizChooseOutput">Chọn…</button>
+            </div>
+
+            <p class="helper">Gợi ý mặc định nằm trong thư mục <b>Tài liệu</b> của Windows.</p>
+            <p class="field-error hidden" id="folderError">Vui lòng chọn đủ thư mục ảnh gốc và thư mục lưu ảnh.</p>
+          </section>
+          <section class="wizard-step hidden" data-step="2">
+            <div class="wizard-badge"><svg class="icon" viewBox="0 0 24 24"><use href="#i-grid" /></svg></div>
+            <h2>Chọn loại ảnh thẻ</h2>
+            <p class="lead">Chọn preset phổ biến. Bạn vẫn có thể đổi preset trên Trang chủ trước khi xử lý.</p>
+            <div class="preset-cards" id="wizPresetList" role="radiogroup" aria-label="Chọn preset ảnh thẻ"></div>
+            <p class="field-error hidden" id="wizardPresetError">Vui lòng chọn một loại ảnh thẻ.</p>
+            <p class="helper">Mặt chiếm 70–80% chiều cao ảnh với hầu hết preset. Ảnh 5×5 dùng tỷ lệ 50–69%.</p>
+          </section>
+
+          <section class="wizard-step hidden" data-step="3">
+            <div class="wizard-badge"><svg class="icon" viewBox="0 0 24 24"><use href="#i-camera" /></svg></div>
+            <h2>Hướng dẫn chụp ảnh</h2>
+            <p class="lead">Một bức ảnh đạt chuẩn sẽ giúp phần mềm xử lý nhanh và chính xác hơn.</p>
+
+            <div class="guide-layout">
+              <div class="guide-anim">
+                <div class="wizard-lottie" id="wizardLottie" aria-hidden="true"></div>
+                <div class="guide-fallback" id="guideFallback" aria-hidden="true">
+                  <svg viewBox="0 0 320 240">
+                    <rect x="70" y="22" width="180" height="196" rx="18" fill="#f4f8ff" stroke="#bcd2f7" stroke-width="3" />
+                    <ellipse cx="160" cy="188" rx="62" ry="40" fill="#1e5aa8" />
+                    <ellipse cx="160" cy="118" rx="28" ry="32" fill="#f2c6a0" />
+                    <ellipse cx="160" cy="98" rx="30" ry="18" fill="#2b2b2b" />
+                    <circle cx="150" cy="118" r="2.6" fill="#2b2b2b" />
+                    <circle cx="170" cy="118" r="2.6" fill="#2b2b2b" />
+                    <path d="M151 130c5 4 13 4 18 0" fill="none" stroke="#b97b58" stroke-width="2.6" stroke-linecap="round" />
+                    <rect x="70" y="60" width="180" height="4" rx="2" fill="#38bdf8" class="guide-scanline" />
+                    <circle cx="252" cy="46" r="15" fill="#16a34a" />
+                    <path d="m245 46 5 5 9-10" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </div>
+              </div>
+
+              <ul class="guide-list">
+                <li>
+                  <span class="guide-num">1</span>
+                  <div><strong>Đứng thẳng, vai cân</strong><p>Giữ đầu và vai hướng về phía máy ảnh.</p></div>
+                </li>
+                <li>
+                  <span class="guide-num">2</span>
+                  <div><strong>Nhìn thẳng vào ống kính</strong><p>Mắt mở tự nhiên, không nghiêng đầu quá 15°.</p></div>
+                </li>
+                <li>
+                  <span class="guide-num">3</span>
+                  <div><strong>Nền trơn, sáng đều</strong><p>Tránh nền có vật lạ hoặc ánh sáng chiếu lệch một bên.</p></div>
+                </li>
+                <li>
+                  <span class="guide-num">4</span>
+                  <div><strong>Không đeo kính râm</strong><p>Kính thường được phép nếu không che mắt và không lóa.</p></div>
+                </li>
+                <li>
+                  <span class="guide-num">5</span>
+                  <div><strong>Không đội mũ</strong><p>Không để tóc che trán, lông mày hoặc hai tai.</p></div>
+                </li>
+              </ul>
+            </div>
+
+            <div class="wizard-callout success">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#i-check" /></svg>
+              <p>Bạn đã sẵn sàng. Bấm <b>Hoàn tất</b> để mở Trang chủ và bắt đầu chọn ảnh.</p>
+            </div>
+          </section>
+        </div>
+
+        <footer class="wizard-foot">
+          <span class="wizard-count" id="wizardStepLabel">Bước 1/4</span>
+          <p class="wizard-alert hidden" id="wizardAlert" role="alert"></p>
+          <div class="wizard-nav">
+            <button class="btn btn-ghost btn-tiny" type="button" id="wizardBack">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#i-arrow-left" /></svg>
+              Quay lại
+            </button>
+            <button class="btn btn-primary btn-tiny" type="button" id="wizardNext">
+              <span id="wizardNextLabel">Tiếp tục</span>
+              <svg class="icon" viewBox="0 0 24 24"><use href="#i-arrow-right" /></svg>
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
+    <input type="file" id="filePicker" accept="image/*" multiple hidden />
+    <div class="toast-area" id="toastArea" aria-live="polite" aria-atomic="false"></div>
+
+    <script src="vendor/lottie.min.js"></script>
+    <script src="wizard.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
