@@ -86,7 +86,7 @@ jobs:
           # therefore embed an older SDK than the ORT tree on disk. Key the Rust
           # cache on the ORT build-script hash + the ORT link env vars so any ORT
           # tree change also invalidates the Rust cache.
-          key: ort-${{ hashFiles('build_ort_baseline.ps1') }}
+          key: ort-${{ hashFiles('build_ort_baseline.ps1', '.github/workflows/windows-build.yml') }}
           env-vars: 'ORT_LIB_PATH ORT_LIB_PROFILE ORT_PREFER_DYNAMIC_LINK ORT_SKIP_DOWNLOAD'
 
       - name: B3 - cmake >= 3.28 guard
@@ -243,23 +243,28 @@ jobs:
           }
           if (-not $urBuilt) { throw 'utf8_range target not buildable from the parent or protobuf solution' }
           # protobuf's vendored fork emits libutf8_range.lib / libutf8_validity.lib;
-          # ort-sys links the archives under their plain target names.
-          # utf8_validity is a sibling target libprotobuf-lite links - best-effort.
+          # ort-sys links the archives under their plain target names and ONLY after
+          # utf8_validity resolves (static_link probes the utf8_range subdir first,
+          # then the protobuf-build root). Stage both plain-name archives at both
+          # probe paths and require both.
           cmake --build $ortBuild --config Release --parallel --target utf8_validity | Out-Null
           $urDir = Join-Path $pbBuild 'third_party\utf8_range'
-          foreach ($target in @('utf8_range', 'utf8_validity')) {
-              $lib = Get-ChildItem -Path $urDir -Recurse -File -Filter "*$target*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($lib) {
-                  $dest = Join-Path (Join-Path $urDir 'Release') "$target.lib"
-                  New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
-                  Copy-Item $lib.FullName $dest -Force
-                  Write-Host "$target.lib <- $($lib.Name)"
-              } else {
-                  Write-Host "$target.lib not produced (informational)"
+          $urRelease = Join-Path $urDir 'Release'
+          $pbRelease = Join-Path $pbBuild 'Release'
+          foreach ($destDir in @($urRelease, $pbRelease)) {
+              New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+              foreach ($target in @('utf8_range', 'utf8_validity')) {
+                  $lib = Get-ChildItem -Path $urDir -Recurse -File -Filter "*$target*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+                  if ($lib) {
+                      Copy-Item $lib.FullName (Join-Path $destDir "$target.lib") -Force
+                      Write-Host "$target.lib staged in $destDir <- $($lib.Name)"
+                  } else {
+                      Write-Host "$target.lib not produced (informational)"
+                  }
               }
           }
-          $urExpected = Join-Path (Join-Path $urDir 'Release') 'utf8_range.lib'
-          if (-not (Test-Path $urExpected)) { throw "utf8_range.lib missing at $urExpected" }
+          if (-not (Test-Path (Join-Path $urRelease 'utf8_range.lib'))) { throw "utf8_range.lib missing at $urRelease" }
+          if (-not (Test-Path (Join-Path $urRelease 'utf8_validity.lib'))) { throw 'utf8_validity.lib missing - ort-sys gates the utf8_range link behind it' }
 
       - name: C3 - Guard static-link prerequisites
         shell: pwsh
@@ -277,6 +282,8 @@ jobs:
           if (-not (Test-Path $mpLib)) { throw "model_package static lib missing: $mpLib (C2c should have produced it)" }
           $urLib = 'D:\build\onnxruntime\build\Windows\Release\_deps\protobuf-build\third_party\utf8_range\Release\utf8_range.lib'
           if (-not (Test-Path $urLib)) { throw "utf8_range static lib missing: $urLib (C2c should have produced it)" }
+          $uvLib = 'D:\build\onnxruntime\build\Windows\Release\_deps\protobuf-build\third_party\utf8_range\Release\utf8_validity.lib'
+          if (-not (Test-Path $uvLib)) { throw "utf8_validity static lib missing: $uvLib (C2c should have produced it)" }
           Write-Host "OK: $staticLib"
           Write-Host "OK: $depsDir (protobuf externals present)"
           Write-Host "OK: $re2Lib"
