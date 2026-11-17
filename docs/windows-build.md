@@ -128,15 +128,21 @@ Exports (C ABI, cdecl, UTF-8 paths):
 | `int phk_process(const char* input, const char* outputDir)` | 0 = wrote an ID-photo JPG (preset 3×4, white bg, head straightened) into `outputDir`; 1 = bad args; 2 = model missing/verify failed; 3 = image unreadable / no face (E002) / multiple faces (E003); 4 = pipeline/IO; 5 = panic caught. |
 | `int phk_last_error(char* buf, int cap)` | Copies the last error (UTF-8, empty on success) into `buf`; returns the needed size. |
 
-Model dir resolution: `phk_set_models_dir` → env `PHOTOKHAN_MODELS_DIR` → `<host-exe>\models`. Panics never cross the FFI boundary. The DLL ships the same statically-linked ORT (no `onnxruntime.dll`; dumpbin-verified in CI, see `dll-dumpbin.txt`).
+Model dir resolution: `phk_set_models_dir` → env `PHOTOKHAN_MODELS_DIR` → `<host-exe>\models`. The DLL ships the same statically-linked ORT (no `onnxruntime.dll`; dumpbin-verified in CI, see `dll-dumpbin.txt`).
+
+Interop contract:
+- Paths are **UTF-8** — marshal them as NUL-terminated `byte[]` (do NOT use `CharSet.Ansi`; it uses the Windows code page and breaks Vietnamese filenames). CI G8 exercises a `ảnh chân dung.png` input.
+- `phk_last_error`'s capacity is Rust `usize` (64-bit) — pass `UIntPtr`, not `int`; decode the buffer as UTF-8 up to the NUL.
+- The DLL is built with `panic=unwind` (CI overrides the release `panic=abort`), so Rust panics are contained and returned as `PHK_ERR_PANIC` (5) instead of terminating the host. The `.exe` keeps `panic=abort`.
 
 PowerShell example:
 
 ```powershell
-Add-Type -Path phk-dll-smoke.cs          # DllImport the three exports
-[PhkDll]::phk_set_models_dir("$PWD\models")
-$rc = [PhkDll]::phk_process("photo.jpg", "out")
-if ($rc -ne 0) { [PhkDll]::phk_last_error($buf, 1024) | Out-Null }
+Add-Type -Path phk-dll-smoke.cs          # DllImport the three exports (byte[] + UIntPtr)
+function ToUtf8Z([string]$v) { [Text.Encoding]::UTF8.GetBytes($v + [char]0) }
+[PhkDll]::phk_set_models_dir((ToUtf8Z "$PWD\models"))
+$rc = [PhkDll]::phk_process((ToUtf8Z "photo.jpg"), (ToUtf8Z "out"))
+if ($rc -ne 0) { $b = New-Object byte[] 1024; [PhkDll]::phk_last_error($b, [UIntPtr]::new(1024)) | Out-Null; [Text.Encoding]::UTF8.GetString($b).TrimEnd([char]0) }
 ```
 
 CI G8 proves it end-to-end on a real face photo (public-domain astronaut portrait): downloads the sample, P/Invokes `phk_process`, asserts a valid 354×472 JPG is written. Host prerequisites: same MSVCP140 (VC++ redist) note as the exe; the DLL is `x64`.

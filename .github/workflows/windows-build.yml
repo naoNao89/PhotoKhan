@@ -566,6 +566,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # The release profile uses panic=abort, which would make catch_unwind
+          # dead code and a Rust panic would kill the HOST process. Rebuild the
+          # DLL with unwinding so phk_process can contain panics (PHK_ERR_PANIC).
+          $env:RUSTFLAGS = '-C panic=unwind'
+          cargo build --release --lib
+          $rustExit = $LASTEXITCODE
+          Remove-Item Env:RUSTFLAGS
+          if ($rustExit -ne 0) { throw 'DLL unwind build failed' }
           $dll = 'src-tauri\target\release\photokhan_lib.dll'
           if (-not (Test-Path $dll)) { throw "inference DLL not found: $dll" }
           # static ORT check on the DLL itself
@@ -586,31 +594,40 @@ jobs:
           if (-not (Test-Path $sample)) { throw 'failed to download astronaut.png sample' }
           $csFile = Join-Path $env:GITHUB_WORKSPACE 'phk-dll-smoke.cs'
           $dllAbs = (Join-Path $env:GITHUB_WORKSPACE 'src-tauri\target\release\photokhan_lib.dll').Replace('\', '\\')
+          # Interop contract: paths are UTF-8. `string`+CharSet.Ansi would use the
+          # Windows code page (breaks Vietnamese filenames), and `int` capacity is
+          # 32-bit vs Rust usize (64-bit). Use byte[] (NUL-terminated UTF-8) and
+          # UIntPtr.
           $cs = @(
               'using System;',
               'using System.Runtime.InteropServices;',
               'using System.Text;',
               'public static class PhkDll {',
-              ('    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]'),
-              '    public static extern int phk_set_models_dir(string dir);',
-              ('    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]'),
-              '    public static extern int phk_process(string input, string outputDir);',
-              ('    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]'),
-              '    public static extern int phk_last_error(StringBuilder buf, int cap);',
+              ('    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl)]'),
+              '    public static extern int phk_set_models_dir(byte[] dir);',
+              ('    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl)]'),
+              '    public static extern int phk_process(byte[] input, byte[] outputDir);',
+              ('    [DllImport(@"' + $dllAbs + '", CallingConvention = CallingConvention.Cdecl)]'),
+              '    public static extern int phk_last_error(byte[] buf, UIntPtr cap);',
               '}'
           ) -join [Environment]::NewLine
           Set-Content -Path $csFile -Value $cs
           Add-Type -Path $csFile
+          function ToUtf8Z([string]$value) { [Text.Encoding]::UTF8.GetBytes($value + [char]0) }
           $env:PHOTOKHAN_MODELS_DIR = "$env:GITHUB_WORKSPACE\models"
           $outDir = Join-Path $env:GITHUB_WORKSPACE 'dll-out'
           if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
-          $rc = [PhkDll]::phk_set_models_dir("$env:GITHUB_WORKSPACE\models")
+          $rc = [PhkDll]::phk_set_models_dir((ToUtf8Z "$env:GITHUB_WORKSPACE\models"))
           if ($rc -ne 0) { throw "phk_set_models_dir failed (rc $rc)" }
-          $rc = [PhkDll]::phk_process($sample, $outDir)
+          # UTF-8 path exercise: Vietnamese filename (codepage marshalling would break this).
+          $viet = Join-Path $env:GITHUB_WORKSPACE 'ảnh chân dung.png'
+          Copy-Item $sample $viet -Force
+          $rc = [PhkDll]::phk_process((ToUtf8Z $viet), (ToUtf8Z $outDir))
           if ($rc -ne 0) {
-              $buf = New-Object System.Text.StringBuilder 1024
-              [PhkDll]::phk_last_error($buf, 1024) | Out-Null
-              throw "phk_process failed (rc $rc): $buf"
+              $buf = New-Object byte[] 1024
+              [PhkDll]::phk_last_error($buf, [UIntPtr]::new(1024)) | Out-Null
+              $msg = [Text.Encoding]::UTF8.GetString($buf).TrimEnd([char]0)
+              throw "phk_process failed (rc $rc): $msg"
           }
           $jpg = Get-ChildItem -Path $outDir -File -Filter '*.jpg' | Select-Object -First 1
           if (-not $jpg) { throw 'phk_process returned OK but no JPG was written' }
