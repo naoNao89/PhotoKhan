@@ -229,15 +229,19 @@ jobs:
 
           $pbBuild = Join-Path $ortBuild '_deps\protobuf-build'
           if (-not (Test-Path $pbBuild)) { throw "protobuf build tree missing: $pbBuild" }
-          # protobuf may be a subproject of the parent solution (FetchContent) or
-          # have its own solution (ExternalProject) - try both.
+          # utf8_range/utf8_validity are protobuf subprojects; the EXCLUDE_FROM_ALL
+          # disease keeps them unbuilt. They live in the PARENT solution (model_package
+          # proved excluded projects are there); fall back to protobuf's own solution
+          # if the parent does not know the target.
+          $urBuilt = $false
+          cmake --build $ortBuild --config Release --parallel --target utf8_range
+          if ($LASTEXITCODE -eq 0) { $urBuilt = $true }
           $pbSln = Join-Path $pbBuild 'protobuf.sln'
-          if (Test-Path $pbSln) {
-              cmake --build $pbSln --config Release --parallel --target utf8_range
-          } else {
-              cmake --build $ortBuild --config Release --parallel --target utf8_range
+          if (-not $urBuilt -and (Test-Path $pbSln)) {
+              cmake --build (Split-Path $pbSln) --config Release --parallel --target utf8_range
+              if ($LASTEXITCODE -eq 0) { $urBuilt = $true }
           }
-          if ($LASTEXITCODE -ne 0) { throw "utf8_range target build failed (exit $LASTEXITCODE)" }
+          if (-not $urBuilt) { throw 'utf8_range target not buildable from the parent or protobuf solution' }
           $urExpected = Join-Path (Join-Path $pbBuild 'third_party') 'utf8_range\Release\utf8_range.lib'
           $urLib = Get-ChildItem -Path (Join-Path $pbBuild 'third_party\utf8_range') -Recurse -File -Filter 'utf8_range.lib' -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $urLib) { throw 'utf8_range.lib not found under protobuf-build\third_party\utf8_range' }
