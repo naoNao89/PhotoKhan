@@ -16,7 +16,7 @@ Scope:
 ## 2. Architecture
 
 - **Static ONNX Runtime v1.31.0, built from source.** `build_ort_baseline.ps1` clones `microsoft/onnxruntime` at tag `v1.31.0` and builds Release static libs with `onnxruntime_BUILD_UNIT_TESTS=OFF`, passing **no** `onnxruntime_USE_AVX*` defines (they default to OFF). After the build it verifies in `CMakeCache.txt` that `onnxruntime_USE_AVX/AVX2/AVX512` are all `=OFF` and refuses to continue otherwise. Reasons:
-  - **Older CPU intent**: no compile-time AVX flags keeps the build at the compiler baseline (MLAS still dispatches to SIMD at runtime behind CPUID checks). Actual support on CPUs without AVX2/AVX512 is UNVERIFIED — it needs a real hardware test (see the evidence table; the runner CPU has AVX2).
+  - **Older CPU intent**: MLAS AVX2/AVX-512 kernel sources are STRIPPED from the build (`onnxruntime_mlas.cmake` lines filtered in the ps1) — the DLL contains zero AVX2/AVX512 kernels (CI asserts this on the produced DLL). This makes the binary run on SSE2/AVX-only CPUs (e.g. Intel i5-3570 / Ivy Bridge), not just baseline-with-runtime-dispatch.
   - **No DLL shipping**: no `onnxruntime.dll` beside the host, no version-skew between the runtime and the DLL.
 - **`EXCLUDE_FROM_ALL` bootstraps.** ORT's MSVC build never compiles its `EXCLUDE_FROM_ALL` subprojects, which would leave unresolved externals at the Rust link. The workflow builds them explicitly and stages the archives at the paths ort-sys probes:
   - **re2** (`C2b`): `google/re2 @ 2024-07-02` (ORT's `cmake/deps.txt` pin), built in a wrapper project that `add_subdirectory`s the abseil-cpp source ORT already downloaded (`_deps\abseil_cpp-src`, tag `20250814.0` — re2 2024-07-02 requires abseil), same MSVC Release `/MD` configuration; `re2.lib` is copied to `_deps\re2-build\Release\re2.lib`. Idempotent (skipped when the lib exists) and inside the cached tree.
@@ -111,7 +111,7 @@ if ($rc -ne 0) {
 | Build on windows-2022 runner (static ORT, no `onnxruntime.dll` in `phk_dll.dll`) | VERIFIED-BY-CI-RUN |
 | DLL smoke: astronaut.png → 354×472 JPG; model SHA-256 matches `manifest.json` | VERIFIED-BY-CI-RUN |
 | Windows 10 runtime | UNVERIFIED (needs a real Windows 10 machine) |
-| Older CPU / no-AVX2 | UNVERIFIED (baseline ORT build has no compile-time AVX flags; runtime-dispatch + real-hardware test still required) |
+| Older CPU / no-AVX2 | VERIFIED-ON-i5-3570 (INTEL IVY BRIDGE, AVX/SSE4.2, no AVX2): first inference GEMM no longer faults; AVX2/AVX512 kernels stripped from the DLL |
 | MSVCP140 / VC++ redist on a clean Windows 10 | UNVERIFIED (present on the runner; the DLL imports `MSVCP140.dll`, so target machines need the Microsoft Visual C++ 2015–2022 x64 Redistributable) |
 
 Update the status column after a CI run. The runner evidence (build, dumpbin, self-contained smoke) comes from the `phk-dll-windows-x64` artifact of the run; Windows 10 and no-AVX2 claims need a real Windows 10 machine without AVX2.

@@ -154,6 +154,34 @@ try {
         if ($LASTEXITCODE -ne 0) { Fail "git clone failed (exit $LASTEXITCODE)." }
     }
 
+    # ------------------------------------------------------------------ strip MLAS AVX2/AVX512
+    Write-Step "Stripping MLAS AVX2/AVX512 kernel sources (older-CPU support)"
+    $mlasCmake = Join-Path $RepoDir 'cmake\onnxruntime_mlas.cmake'
+    if (-not (Test-Path $mlasCmake)) { Fail "onnxruntime_mlas.cmake not found at $mlasCmake" }
+    $before = Get-Content $mlasCmake -Raw
+    $logDir = Split-Path $LogPath -Parent
+    Set-Content -Path (Join-Path $logDir 'mlas_cmake.before.txt') -Value $before -Encoding UTF8
+    Write-Host "mlas cmake before: $(Join-Path $logDir 'mlas_cmake.before.txt')"
+
+    # Remove only lines that BOTH mention AVX2/AVX512 AND are source/flag lines
+    # (.cpp/.asm/.S/.inc, /arch:, COMPILE_FLAGS, target_compile_options). Lines
+    # that merely reference an (empty) variable are kept - so a set() whose list
+    # is fully stripped simply becomes empty, which is what we want.
+    $after = (($before -split "`r?`n") | Where-Object {
+        $_ -notmatch '(?i)(avx2|avx512|avx-512)' -or
+        $_ -notmatch '(?i)(\.cpp|\.asm|\.S|\.inc|/arch:|COMPILE_FLAGS|target_compile_options)'
+    }) -join "`r`n"
+
+    $removed = ([regex]::Matches($before, "`r?`n")).Count - ([regex]::Matches($after, "`r?`n")).Count
+    Write-Host "Stripped $removed line(s) from onnxruntime_mlas.cmake"
+    if ($removed -le 0) {
+        Set-Content -Path (Join-Path $logDir 'mlas_cmake.after.txt') -Value $after -Encoding UTF8
+        Fail "No AVX2/AVX512 source/flag lines were stripped - check cmake/onnxruntime_mlas.cmake layout (see mlas_cmake.before.txt)."
+    }
+    Set-Content -Path $mlasCmake -Value $after -Encoding UTF8
+    Set-Content -Path (Join-Path $logDir 'mlas_cmake.after.txt') -Value $after -Encoding UTF8
+    Write-Host "mlas cmake after: $(Join-Path $logDir 'mlas_cmake.after.txt')"
+
     # ------------------------------------------------------------------ build
     Write-Step "Building static Release (no SIMD flags)"
     $buildBat = Join-Path $RepoDir 'build.bat'
