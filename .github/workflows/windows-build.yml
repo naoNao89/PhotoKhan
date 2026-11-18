@@ -599,3 +599,4 @@ jobs:
             ort_build.log
             mlas_cmake.before.txt
             mlas_cmake.after.txt
+            mlas_platform.cpp

@@ -206,6 +206,17 @@ try {
     Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE 'mlas_cmake.after.txt') -Value $after -Encoding UTF8
     Write-Host "mlas cmake after: $(Join-Path $logDir 'mlas_cmake.after.txt')"
 
+    # Also stage platform.cpp: its dispatch table references every AVX2/AVX512/
+    # AVX-VNNI kernel unconditionally - needed to patch the constructor after the
+    # source strip (the link fails on those symbols otherwise).
+    $platformCpp = Join-Path $RepoDir 'onnxruntime\core\mlas\lib\platform.cpp'
+    if (Test-Path $platformCpp) {
+        Copy-Item $platformCpp (Join-Path $env:GITHUB_WORKSPACE 'mlas_platform.cpp') -Force
+        Write-Host "mlas platform.cpp staged for the artifact"
+    } else {
+        Write-Host "platform.cpp not found at $platformCpp (informational)"
+    }
+
     # ------------------------------------------------------------------ build
     Write-Step "Building static Release (no SIMD flags)"
     $buildBat = Join-Path $RepoDir 'build.bat'
