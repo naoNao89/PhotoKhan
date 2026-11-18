@@ -158,7 +158,7 @@ try {
     Write-Step "Stripping MLAS AVX2/AVX512 kernel sources (older-CPU support)"
     # Restore pristine tracked files first (git checkout) so every run strips
     # from the original content - idempotent across cache reuses.
-    & git -C $RepoDir checkout -- cmake/onnxruntime_mlas.cmake onnxruntime/core/mlas/lib/platform.cpp
+    & git -C $RepoDir checkout -- cmake/onnxruntime_mlas.cmake onnxruntime/core/mlas/lib/platform.cpp onnxruntime/core/mlas/lib/convsym.cpp onnxruntime/core/mlas/lib/convolve.cpp onnxruntime/core/mlas/lib/reorder.cpp onnxruntime/core/mlas/lib/sconv_nchw_depthwise_multiplier_greater_than_1.cpp onnxruntime/core/mlas/lib/snchwc.h
     if ($LASTEXITCODE -ne 0) { Fail "git checkout of mlas files failed (exit $LASTEXITCODE)." }
     $mlasCmake = Join-Path $RepoDir 'cmake\onnxruntime_mlas.cmake'
     if (-not (Test-Path $mlasCmake)) { Fail "onnxruntime_mlas.cmake not found at $mlasCmake" }
