@@ -226,8 +226,14 @@ try {
         # constructor. This is idempotent-safe because the file is restored from
         # git below before any patching.
         $platformBefore = Get-Content $platformCpp -Raw
+        # Only delete assignment statements (lines starting with "this->") that
+        # reference AVX2/AVX512/AVX-VNNI kernels, plus the Avx2Supported_ flag
+        # line. NEVER delete other lines (e.g. the MlasOpmask16BitTableAvx512
+        # data table's declaration line would break the file - observed C2059).
+        $assignmentAvxRx = '^\s*this->.*(?i)(avx2|avx512|avxvnni|avx2vnni|vnni)'
+        $avx2FlagRx = '^\s*this->Avx2Supported_\s*=\s*true\s*;'
         $after = (($platformBefore -split "`r?`n") | Where-Object {
-            $_ -notmatch '(?i)(Avx2|Avx512|AvxVnni|Avx2Vnni|Vnni)'
+            $_ -notmatch $assignmentAvxRx -and $_ -notmatch $avx2FlagRx
         }) -join "`r`n"
         $removedLines = ([regex]::Matches($platformBefore, "`r?`n")).Count - ([regex]::Matches($after, "`r?`n")).Count
         if ($removedLines -le 0) {
