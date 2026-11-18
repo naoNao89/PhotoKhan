@@ -601,3 +601,4 @@ jobs:
             mlas_cmake.after.txt
             mlas_platform.cpp
             mlas_platform.patched.cpp
+            mlas_lib_src/

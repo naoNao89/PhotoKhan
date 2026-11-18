@@ -218,6 +218,17 @@ try {
         Copy-Item $platformCpp (Join-Path $env:GITHUB_WORKSPACE 'mlas_platform.cpp') -Force
         Write-Host "mlas platform.cpp staged for the artifact"
 
+        # Stage the whole mlas/lib tree too: other TUs (snchwc.cpp, convolve.cpp,
+        # convsym.cpp, ...) reference AVX kernels DIRECTLY, so we need their
+        # sources to substitute those references with baseline kernels.
+        $mlasLibDir = Join-Path $RepoDir 'onnxruntime\core\mlas\lib'
+        if (Test-Path $mlasLibDir) {
+            $stageDir = Join-Path $env:GITHUB_WORKSPACE 'mlas_lib_src'
+            if (Test-Path $stageDir) { Remove-Item $stageDir -Recurse -Force }
+            Copy-Item -Path $mlasLibDir -Destination $stageDir -Recurse -Force
+            Write-Host "mlas lib sources staged for the artifact"
+        }
+
         # Patch the AMD64 dispatch constructor by DELETING every assignment line
         # whose RHS references an AVX2/AVX512/AVX-VNNI kernel, plus the
         # "Avx2Supported_ = true;" line. Every such line is a complete single
