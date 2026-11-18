@@ -253,6 +253,46 @@ try {
         Set-Content -Path $platformCpp -Value $after -Encoding UTF8
         Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE 'mlas_platform.patched.cpp') -Value $after -Encoding UTF8
         Write-Host "platform.cpp patched: removed $removedLines AVX reference line(s)"
+
+        # Other MLAS TUs reference AVX kernels DIRECTLY; patch them too.
+        # 1) sconv_nchw_depthwise_multiplier_greater_than_1.cpp: the AMD64
+        #    branch asserts the AVX512F kernel and calls it directly. It is dead
+        #    after the platform patch (the kernel is never selected), so compile
+        #    the #else branch instead by switching the #if to #if 0.
+        $sconv = Join-Path $RepoDir 'onnxruntime\core\mlas\lib\sconv_nchw_depthwise_multiplier_greater_than_1.cpp'
+        if (Test-Path $sconv) {
+            $sconvContent = Get-Content $sconv -Raw
+            $marker = '#if defined(MLAS_TARGET_AMD64)'
+            if ($sconvContent -notmatch [regex]::Escape($marker)) {
+                Fail "sconv AMD64 marker not found"
+            }
+            $sconvContent = $sconvContent.Replace($marker, '#if 0  // AVX512F kernel stripped; baseline platforms take the #else branch')
+            Set-Content -Path $sconv -Value $sconvContent -Encoding UTF8
+            Write-Host "sconv_nchw_depthwise_multiplier_greater_than_1.cpp patched (#if 0)"
+        }
+        # 2) convsym.cpp: the four AVX dispatch struct definitions reference the
+        #    stripped kernels. No code reads them after the platform.cpp patch
+        #    (its references were deleted), so remove the definitions. Keep the
+        #    extern declarations (declarations alone do not cause link errors).
+        $convsym = Join-Path $RepoDir 'onnxruntime\core\mlas\lib\convsym.cpp'
+        if (Test-Path $convsym) {
+            $convsymContent = Get-Content $convsym -Raw
+            $startMarker = 'const MLAS_CONV_SYM_DISPATCH MlasConvSymDispatchAvx2 = {'
+            $endMarker = '};'
+            if ($convsymContent -notmatch [regex]::Escape($startMarker)) {
+                Fail "convsym Avx2 dispatch marker not found"
+            }
+            # Remove from the Avx2 struct definition through the last Avx512Vnni
+            # struct's closing brace (the '#if !defined(ORT_MINIMAL_BUILD)' block
+            # containing Avx512Core/Avx512Vnni ends before the next '#endif').
+            $idx = $convsymContent.IndexOf($startMarker)
+            $tail = $convsymContent.Substring($idx)
+            $tailIdx = $tail.IndexOf('#endif')
+            if ($tailIdx -le 0) { Fail "convsym trailing #endif not found" }
+            $convsymContent = $convsymContent.Substring(0, $idx) + $tail.Substring($tailIdx + '#endif'.Length)
+            Set-Content -Path $convsym -Value $convsymContent -Encoding UTF8
+            Write-Host "convsym.cpp patched: AVX dispatch struct definitions removed"
+        }
     } else {
         Write-Host "platform.cpp not found at $platformCpp (informational)"
     }
