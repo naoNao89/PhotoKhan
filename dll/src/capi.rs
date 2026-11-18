@@ -10,6 +10,7 @@
 //!   3. `<thư mục DLL>\models` (bundle tự chứa — `current_exe()` là HOST exe nên
 //!      phải lấy đường dẫn DLL qua GetModuleHandleExW/GetModuleFileNameW)
 //!   4. `<thư mục host exe>\models`
+//!   5. model nhúng trong DLL (single-file): xác minh SHA-256 với manifest nhúng
 //!
 //! Mọi hàm đều không panicked ra ngoài biên giới FFI (catch_unwind).
 
@@ -20,7 +21,7 @@ use std::sync::Mutex;
 
 use crate::error::{AppError, AppResult};
 use crate::models::ModelStore;
-use crate::pipeline::{ProcessOptions, process_single_image};
+use crate::pipeline::{ProcessOptions, process_single_image, process_single_image_embedded};
 
 /// Mã trả về của `phk_process`.
 pub const PHK_OK: i32 = 0;
@@ -175,16 +176,18 @@ fn run_process(input_path: *const c_char, output_dir: *const c_char) -> i32 {
         return PHK_ERR_PROCESS;
     }
 
-    let models = match models_dir() {
-        Ok(dir) => ModelStore::new(dir),
-        Err(error) => {
-            set_last_error(format!("{}: {}", error.code, error.message_vi));
-            return PHK_ERR_MODEL;
+    let options = ProcessOptions::default();
+    // Ưu tiên thư mục model hợp lệ (có manifest.json); nếu không có, dùng model
+    // nhúng trong DLL (single-file) - lỗi xác minh bên trong vẫn trả về E004.
+    let result = match models_dir() {
+        Ok(dir) => {
+            let models = ModelStore::new(dir);
+            process_single_image(&source, &out_dir, &models, &options)
         }
+        Err(_) => process_single_image_embedded(&source, &out_dir, &options),
     };
 
-    let options = ProcessOptions::default();
-    match process_single_image(&source, &out_dir, &models, &options) {
+    match result {
         Ok(_report) => {
             set_last_error(String::new());
             PHK_OK

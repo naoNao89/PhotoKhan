@@ -112,6 +112,31 @@ impl FaceDetector {
         })
     }
 
+    /// Nạp YuNet từ bộ nhớ (model nhúng trong DLL). Model phải đã được xác minh
+    /// SHA-256 trước đó; `commit_from_memory` tự chép model nên `&'static` an toàn.
+    pub fn load_from_bytes(model_bytes: &'static [u8]) -> AppResult<Self> {
+        let environment = environment()?;
+
+        let session = Session::builder(environment)
+            .map_err(|_| AppError::model_runtime())?
+            .with_intra_threads(1)
+            .map_err(|_| AppError::model_runtime())?
+            .commit_from_memory(model_bytes)
+            .map_err(|_| AppError::model_runtime())?;
+
+        let inputs = session.inputs();
+        if inputs.len() != 1 {
+            return Err(AppError::model_runtime());
+        }
+        let input_name = inputs[0].name().to_string();
+
+        Ok(Self {
+            session,
+            input_name,
+            output_shapes: Vec::new(),
+        })
+    }
+
     /// Shape (dims) của các output YuNet từ lần `detect()` gần nhất.
     pub fn output_shapes(&self) -> &[(String, Vec<i64>)] {
         &self.output_shapes

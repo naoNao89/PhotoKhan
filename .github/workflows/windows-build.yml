@@ -432,6 +432,58 @@ jobs:
           Move-Item $moved $bundle
           $jpg = Get-ChildItem -Path (Join-Path $bundle 'out') -File -Filter '*.jpg' | Select-Object -First 1
           if (-not $jpg) { throw 'relocated bundle lost its smoke output JPG' }
+
+          # Single-file (embedded-model) proof: ONLY phk_dll.dll in a fresh dir -
+          # no models\ anywhere, no env, no setter. The DLL must verify and run the
+          # embedded model (include_bytes) from memory.
+          $solo = Join-Path $env:TEMP ('phk-solo-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Force -Path $solo | Out-Null
+          Copy-Item (Join-Path $bundle 'phk_dll.dll') (Join-Path $solo 'phk_dll.dll') -Force
+          $csSoloFile = Join-Path $env:GITHUB_WORKSPACE 'phk-dll-solo-smoke.cs'
+          $csSolo = @(
+              'using System;',
+              'using System.Runtime.InteropServices;',
+              'using System.Text;',
+              'public static class PhkDllSolo {',
+              '    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]',
+              '    private static extern IntPtr LoadLibrary(string lpFileName);',
+              '    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]',
+              '    private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);',
+              '    private delegate int ProcessFn(byte[] input, byte[] outputDir);',
+              '    private delegate int LastErrorFn(byte[] buf, UIntPtr cap);',
+              '    private static ProcessFn _process;',
+              '    private static LastErrorFn _lastError;',
+              '    public static void Init(string dllPath) {',
+              '        IntPtr h = LoadLibrary(dllPath);',
+              '        if (h == IntPtr.Zero) { throw new InvalidOperationException("LoadLibrary failed: " + dllPath); }',
+              '        _process = (ProcessFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_process"), typeof(ProcessFn));',
+              '        _lastError = (LastErrorFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_last_error"), typeof(LastErrorFn));',
+              '    }',
+              '    public static int phk_process(byte[] input, byte[] outputDir) { return _process(input, outputDir); }',
+              '    public static int phk_last_error(byte[] buf, UIntPtr cap) { return _lastError(buf, cap); }',
+              '}'
+          ) -join [Environment]::NewLine
+          Set-Content -Path $csSoloFile -Value $csSolo
+          Add-Type -Path $csSoloFile
+          $soloOut = Join-Path $solo 'out'
+          New-Item -ItemType Directory -Force -Path $soloOut | Out-Null
+          $soloViet = Join-Path $solo 'ảnh chân dung.png'
+          Copy-Item $sample $soloViet -Force
+          [PhkDllSolo]::Init((Join-Path $solo 'phk_dll.dll'))
+          $rcSolo = [PhkDllSolo]::phk_process((ToUtf8Z $soloViet), (ToUtf8Z $soloOut))
+          if ($rcSolo -ne 0) {
+              $buf = New-Object byte[] 1024
+              [PhkDllSolo]::phk_last_error($buf, [UIntPtr]::new(1024)) | Out-Null
+              $msgSolo = [Text.Encoding]::UTF8.GetString($buf).TrimEnd([char]0)
+              throw "single-file phk_process failed (rc $rcSolo): $msgSolo"
+          }
+          $jpgSolo = Get-ChildItem -Path $soloOut -File -Filter '*.jpg' | Select-Object -First 1
+          if (-not $jpgSolo) { throw 'single-file smoke returned OK but no JPG was written' }
+          $imgSolo = [System.Drawing.Image]::FromFile($jpgSolo.FullName)
+          $dimsSolo = "$($imgSolo.Width)x$($imgSolo.Height)"
+          $imgSolo.Dispose()
+          if ($dimsSolo -ne '354x472') { throw "unexpected single-file output dimensions: $dimsSolo (expected 354x472)" }
+          Write-Host "Single-file DLL smoke OK (embedded model, no models dir): $($jpgSolo.Name) ($dimsSolo), rc=$rcSolo"
           # SHA-256: DLL + model + output JPG.
           $targets = @(
               (Join-Path $bundle 'phk_dll.dll'),
@@ -480,6 +532,12 @@ jobs:
                   models_resolution = 'dll_dir'
                   binding = 'init (LoadLibrary/GetProcAddress, no baked DLL path)'
                   bundle_relocated = $true
+              }
+              smoke_single_file = [ordered]@{
+                  rc = $rcSolo
+                  dimensions = $dimsSolo
+                  models_resolution = 'embedded'
+                  dll_only = $true
               }
               installer = [ordered]@{
                   built = $false

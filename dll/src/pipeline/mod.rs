@@ -135,6 +135,25 @@ pub fn process_single_image(
     pipeline.process(source, output_dir, options)
 }
 
+/// Nạp pipeline từ model nhúng trong DLL (single-file): xác minh SHA-256 với
+/// manifest nhúng rồi mở session từ bộ nhớ.
+pub fn pipeline_embedded() -> AppResult<Pipeline> {
+    crate::embed::verify_embedded()?;
+    let detector = face::FaceDetector::load_from_bytes(crate::embed::YUNET_ONNX)?;
+    Ok(Pipeline { detector })
+}
+
+/// Xử lý một ảnh bằng model nhúng (single-file). Fallback khi không có thư mục
+/// model hợp lệ nào.
+pub fn process_single_image_embedded(
+    source: &Path,
+    output_dir: &Path,
+    options: &ProcessOptions,
+) -> AppResult<ProcessReport> {
+    let mut pipeline = pipeline_embedded()?;
+    pipeline.process(source, output_dir, options)
+}
+
 /// Yêu cầu đúng một khuôn mặt: không có → E002, nhiều hơn một → E003.
 pub fn select_single_face(mut faces: Vec<Face>) -> AppResult<Face> {
     if faces.is_empty() {

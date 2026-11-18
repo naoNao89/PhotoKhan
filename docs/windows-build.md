@@ -49,7 +49,7 @@ Return codes and error mapping:
 | 4 | `PHK_ERR_PROCESS` — pipeline/IO failure | `E005–E007: ...` |
 | 5 | `PHK_ERR_PANIC` — Rust panic caught at the FFI boundary | `phk_process: panic caught inside DLL` |
 
-Model resolution order: `phk_set_models_dir` → env `PHOTOKHAN_MODELS_DIR` → `<DLL dir>\models` → `<host exe>\models`; the first candidate containing `manifest.json` wins, then `ModelStore` verifies the model SHA-256 (mismatch → `E004` → rc 2).
+Model resolution order: `phk_set_models_dir` → env `PHOTOKHAN_MODELS_DIR` → `<DLL dir>\models` → `<host exe>\models` → **model nhúng trong DLL** (single-file). The first candidate containing `manifest.json` wins, then `ModelStore` verifies the model SHA-256 (mismatch → `E004` → rc 2); with no valid dir the **embedded** model is used — its SHA-256 is verified against the embedded manifest before loading, so **a lone `phk_dll.dll` runs standalone**.
 
 Interop contract (host-side):
 
@@ -58,6 +58,8 @@ Interop contract (host-side):
 - The DLL is x64 and imports MSVCP140 (VC++ redistributable required on the target — see section 6).
 
 ## 4. Self-contained bundle
+
+Layout: `phk_dll.dll` + `models\` (manifest.json, face_detection_yunet_2023mar.onnx, LICENSE) + `licenses\` + `phk-dll-smoke.cs`. `models\` is optional — the DLL has the model embedded, so **a lone `phk_dll.dll` runs standalone**; keep `models\` only when you want to swap the model without rebuilding.
 
 CI stages and uploads `photokhan-dll-bundle` (artifact `phk-dll-windows-x64`):
 
