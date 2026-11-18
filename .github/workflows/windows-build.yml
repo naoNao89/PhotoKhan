@@ -600,3 +600,4 @@ jobs:
             mlas_cmake.before.txt
             mlas_cmake.after.txt
             mlas_platform.cpp
+            mlas_platform.patched.cpp

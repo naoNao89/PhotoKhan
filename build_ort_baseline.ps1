@@ -156,6 +156,10 @@ try {
 
     # ------------------------------------------------------------------ strip MLAS AVX2/AVX512
     Write-Step "Stripping MLAS AVX2/AVX512 kernel sources (older-CPU support)"
+    # Restore pristine tracked files first (git checkout) so every run strips
+    # from the original content - idempotent across cache reuses.
+    & git -C $RepoDir checkout -- cmake/onnxruntime_mlas.cmake onnxruntime/core/mlas/lib/platform.cpp
+    if ($LASTEXITCODE -ne 0) { Fail "git checkout of mlas files failed (exit $LASTEXITCODE)." }
     $mlasCmake = Join-Path $RepoDir 'cmake\onnxruntime_mlas.cmake'
     if (-not (Test-Path $mlasCmake)) { Fail "onnxruntime_mlas.cmake not found at $mlasCmake" }
     $before = Get-Content $mlasCmake -Raw
@@ -213,6 +217,25 @@ try {
     if (Test-Path $platformCpp) {
         Copy-Item $platformCpp (Join-Path $env:GITHUB_WORKSPACE 'mlas_platform.cpp') -Force
         Write-Host "mlas platform.cpp staged for the artifact"
+
+        # Patch the AMD64 dispatch constructor by DELETING every assignment line
+        # whose RHS references an AVX2/AVX512/AVX-VNNI kernel, plus the
+        # "Avx2Supported_ = true;" line. Every such line is a complete single
+        # statement, so removing it never breaks syntax; the corresponding slot
+        # keeps the baseline SSE/SSE41/AVX value assigned earlier in the
+        # constructor. This is idempotent-safe because the file is restored from
+        # git below before any patching.
+        $platformBefore = Get-Content $platformCpp -Raw
+        $after = (($platformBefore -split "`r?`n") | Where-Object {
+            $_ -notmatch '(?i)(Avx2|Avx512|AvxVnni|Avx2Vnni|Vnni)'
+        }) -join "`r`n"
+        $removedLines = ([regex]::Matches($platformBefore, "`r?`n")).Count - ([regex]::Matches($after, "`r?`n")).Count
+        if ($removedLines -le 0) {
+            Fail "No AVX references found in platform.cpp - patch did nothing."
+        }
+        Set-Content -Path $platformCpp -Value $after -Encoding UTF8
+        Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE 'mlas_platform.patched.cpp') -Value $after -Encoding UTF8
+        Write-Host "platform.cpp patched: removed $removedLines AVX reference line(s)"
     } else {
         Write-Host "platform.cpp not found at $platformCpp (informational)"
     }
