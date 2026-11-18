@@ -167,16 +167,22 @@ try {
     Set-Content -Path $origPath -Value $before -Encoding UTF8
     Write-Host "mlas cmake before: $(Join-Path $logDir 'mlas_cmake.before.txt')"
 
-    # Remove ONLY source file entries (lines that are path entries for AVX2/
-    # AVX512 kernels). Flag/property/GLOB-header lines are KEPT: after the
-    # sources are gone the variables they reference are empty, so applying
-    # "/arch:AVX2" to an empty list is harmless, and the file structure stays
-    # valid CMake. (A previous version also stripped GLOB patterns and
-    # PROPERTIES lines, breaking the file's syntax - CMake: "Expected (, got
-    # identifier with text PROPERTY".)
-    $after = (($before -split "`r?`n") | Where-Object {
-        $_ -notmatch '(?i)\b(avx2|avx512|avx-512)\b' -or
-        $_ -notmatch '(?i)(\.cpp|\.asm|\.S|\.inc)'
+    # Neutralize AVX2/AVX512 kernels WITHOUT deleting any line: every file TOKEN
+    # whose name contains avx2/avx512/avxvnni (e.g. qgemm_kernel_avx2.cpp) is
+    # renamed to a nonexistent "__none__.cpp"; GLOB patterns are rewritten to
+    # __none__ too. Syntax stays intact (set_source_files_properties lines keep
+    # their arguments, CMake parses fine, the build never compiles those files).
+    # Verified against the real v1.31.0 onnxruntime_mlas.cmake (line 986).
+    $tokenRx = '(?i)[A-Za-z0-9_\-]*(?:avx2|avx512|avx-512|avxvnni)[A-Za-z0-9_\-]*\.(?:cpp|asm|S|inc)'
+    $after = (($before -split "`r?`n") | ForEach-Object {
+        $line = $_
+        if ($line -match '(?i)avx2|avx512|avx-512|avxvnni') {
+            $line = [regex]::Replace($line, $tokenRx, '__none__.cpp')
+            if ($line -match '\*') {
+                $line = $line -replace '(?i)avx2|avx512|avx-512|avxvnni', '__none__'
+            }
+        }
+        $line
     }) -join "`r`n"
 
     $removed = ([regex]::Matches($before, "`r?`n")).Count - ([regex]::Matches($after, "`r?`n")).Count
