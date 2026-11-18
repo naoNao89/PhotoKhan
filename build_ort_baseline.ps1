@@ -167,19 +167,29 @@ try {
     Set-Content -Path $origPath -Value $before -Encoding UTF8
     Write-Host "mlas cmake before: $(Join-Path $logDir 'mlas_cmake.before.txt')"
 
-    # Neutralize AVX2/AVX512 kernels WITHOUT deleting any line: every file TOKEN
-    # whose name contains avx2/avx512/avxvnni (e.g. qgemm_kernel_avx2.cpp) is
-    # renamed to a nonexistent "__none__.cpp"; GLOB patterns are rewritten to
-    # __none__ too. Syntax stays intact (set_source_files_properties lines keep
-    # their arguments, CMake parses fine, the build never compiles those files).
-    # Verified against the real v1.31.0 onnxruntime_mlas.cmake (line 986).
-    $tokenRx = '(?i)[A-Za-z0-9_\-]*(?:avx2|avx512|avx-512|avxvnni)[A-Za-z0-9_\-]*\.(?:cpp|asm|S|inc)'
+    # Neutralize AVX2/AVX512/AVX-VNNI kernels:
+    # - Lines that are PURE path entries (only ${MLAS_SRC_DIR}/...file.ext) are
+    #   deleted - they only ever appear inside list assignments, so the variable
+    #   becomes naturally empty and the file structure stays valid.
+    # - GLOB patterns (*) are rewritten to __none__ so they expand to nothing.
+    # - All other lines (set_property(SOURCE ... openers, PROPERTIES lines,
+    #   comments, set(var ...) headers) are kept verbatim: the referenced files
+    #   still exist on disk, properties on files not in any target are harmless,
+    #   and multi-line statements stay intact.
+    # Token matcher uses substring matching (avx512f/avx512_2bit/avx2vnni
+    # caught; no \b boundary - _ is a word char and would hide these).
+    $purePathRx = '^\s*\$\{MLAS_SRC_DIR\}/[^"()]*\.(cpp|asm|S|inc)\s*$'
+    $avxRx = '(?i)(avx2|avx512|avx-512|avxvnni)[\w\-]*'
+    $removed = 0
     $after = (($before -split "`r?`n") | ForEach-Object {
         $line = $_
-        if ($line -match '(?i)avx2|avx512|avx-512|avxvnni') {
-            $line = [regex]::Replace($line, $tokenRx, '__none__.cpp')
+        if ($line -match $avxRx) {
+            if ($line -match $purePathRx) {
+                $removed++
+                return
+            }
             if ($line -match '\*') {
-                $line = $line -replace '(?i)avx2|avx512|avx-512|avxvnni', '__none__'
+                $line = $line -replace $avxRx, '__none__'
             }
         }
         $line
