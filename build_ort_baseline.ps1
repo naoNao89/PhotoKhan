@@ -161,15 +161,22 @@ try {
     $before = Get-Content $mlasCmake -Raw
     $logDir = Split-Path $LogPath -Parent
     Set-Content -Path (Join-Path $logDir 'mlas_cmake.before.txt') -Value $before -Encoding UTF8
+    # Also stage copies into the workspace so CI can upload them (D:\build is
+    # not accessible from the artifact step).
+    $origPath = Join-Path $env:GITHUB_WORKSPACE 'mlas_cmake.before.txt'
+    Set-Content -Path $origPath -Value $before -Encoding UTF8
     Write-Host "mlas cmake before: $(Join-Path $logDir 'mlas_cmake.before.txt')"
 
-    # Remove only lines that BOTH mention AVX2/AVX512 AND are source/flag lines
-    # (.cpp/.asm/.S/.inc, /arch:, COMPILE_FLAGS, target_compile_options). Lines
-    # that merely reference an (empty) variable are kept - so a set() whose list
-    # is fully stripped simply becomes empty, which is what we want.
+    # Remove ONLY source file entries (lines that are path entries for AVX2/
+    # AVX512 kernels). Flag/property/GLOB-header lines are KEPT: after the
+    # sources are gone the variables they reference are empty, so applying
+    # "/arch:AVX2" to an empty list is harmless, and the file structure stays
+    # valid CMake. (A previous version also stripped GLOB patterns and
+    # PROPERTIES lines, breaking the file's syntax - CMake: "Expected (, got
+    # identifier with text PROPERTY".)
     $after = (($before -split "`r?`n") | Where-Object {
-        $_ -notmatch '(?i)(avx2|avx512|avx-512)' -or
-        $_ -notmatch '(?i)(\.cpp|\.asm|\.S|\.inc|/arch:|COMPILE_FLAGS|target_compile_options)'
+        $_ -notmatch '(?i)\b(avx2|avx512|avx-512)\b' -or
+        $_ -notmatch '(?i)(\.cpp|\.asm|\.S|\.inc)'
     }) -join "`r`n"
 
     $removed = ([regex]::Matches($before, "`r?`n")).Count - ([regex]::Matches($after, "`r?`n")).Count
@@ -180,6 +187,7 @@ try {
     }
     Set-Content -Path $mlasCmake -Value $after -Encoding UTF8
     Set-Content -Path (Join-Path $logDir 'mlas_cmake.after.txt') -Value $after -Encoding UTF8
+    Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE 'mlas_cmake.after.txt') -Value $after -Encoding UTF8
     Write-Host "mlas cmake after: $(Join-Path $logDir 'mlas_cmake.after.txt')"
 
     # ------------------------------------------------------------------ build

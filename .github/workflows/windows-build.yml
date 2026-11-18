@@ -313,8 +313,11 @@ jobs:
           $dll = 'target\release\phk_dll.dll'
           if (-not (Test-Path $dll)) { throw "release DLL not found: $dll" }
           # Older-CPU guarantee: the DLL must contain NO AVX2/AVX-512 kernels
-          # (MLAS stripped in the ORT build). grep count must be 0.
-          $avxCount = (strings $dll | Select-String -Pattern '(?i)avx2|avx512' | Measure-Object).Count
+          # (MLAS stripped in the ORT build). Portable byte-read regex instead of
+          # `strings` (not guaranteed present on Windows runners).
+          $bytes = [IO.File]::ReadAllBytes($dll)
+          $dllText = [Text.Encoding]::ASCII.GetString($bytes)
+          $avxCount = ([regex]::Matches($dllText, '(?i)avx2|avx512')).Count
           if ($avxCount -ne 0) { throw "DLL still contains $avxCount AVX2/AVX512 symbol(s) - MLAS strip failed" }
           Write-Host "AVX2/AVX512 symbols in DLL: 0 (stripped OK)"
           Write-Host "Release DLL OK: $dll"
@@ -594,3 +597,5 @@ jobs:
             dll-dumpbin.txt
             hashes.txt
             ort_build.log
+            mlas_cmake.before.txt
+            mlas_cmake.after.txt
