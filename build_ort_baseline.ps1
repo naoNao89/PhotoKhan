@@ -271,27 +271,89 @@ try {
             Write-Host "sconv_nchw_depthwise_multiplier_greater_than_1.cpp patched (#if 0)"
         }
         # 2) convsym.cpp: the four AVX dispatch struct definitions reference the
-        #    stripped kernels. No code reads them after the platform.cpp patch
-        #    (its references were deleted), so remove the definitions. Keep the
-        #    extern declarations (declarations alone do not cause link errors).
+        #    stripped kernels, AND the `extern "C" { }` block contains kernel
+        #    DEFINITIONS (not declarations) that still need the symbols. Remove
+        #    both: the 8 kernel definition lines and the 4 dispatch structs.
+        #    Extern declarations in mlasi.h are harmless (declarations only).
         $convsym = Join-Path $RepoDir 'onnxruntime\core\mlas\lib\convsym.cpp'
         if (Test-Path $convsym) {
-            $convsymContent = Get-Content $convsym -Raw
+            $convsymLines = Get-Content $convsym
+            # drop kernel definition lines inside the extern "C" block
+            $convsymLines = $convsymLines | Where-Object {
+                $_ -notmatch '^\s*MLAS_CONV_SYM_(KERNEL|DEPTHWISE_KERNEL) MlasConvSym(Kernel|DepthwiseKernel)Avx(2|Vnni|512)'
+            }
+            $convsymContent = $convsymLines -join "`r`n"
             $startMarker = 'const MLAS_CONV_SYM_DISPATCH MlasConvSymDispatchAvx2 = {'
-            $endMarker = '};'
             if ($convsymContent -notmatch [regex]::Escape($startMarker)) {
                 Fail "convsym Avx2 dispatch marker not found"
             }
-            # Remove from the Avx2 struct definition through the last Avx512Vnni
-            # struct's closing brace (the '#if !defined(ORT_MINIMAL_BUILD)' block
-            # containing Avx512Core/Avx512Vnni ends before the next '#endif').
             $idx = $convsymContent.IndexOf($startMarker)
             $tail = $convsymContent.Substring($idx)
             $tailIdx = $tail.IndexOf('#endif')
             if ($tailIdx -le 0) { Fail "convsym trailing #endif not found" }
             $convsymContent = $convsymContent.Substring(0, $idx) + $tail.Substring($tailIdx + '#endif'.Length)
             Set-Content -Path $convsym -Value $convsymContent -Encoding UTF8
-            Write-Host "convsym.cpp patched: AVX dispatch struct definitions removed"
+            Write-Host "convsym.cpp patched: kernel definitions + AVX dispatch structs removed"
+        }
+        # 3) convolve.cpp: the AVX512F selection condition compares against the
+        #    stripped kernel; after the platform patch it can never be true, so
+        #    replace the comparison with false (removes the reference).
+        $convolve = Join-Path $RepoDir 'onnxruntime\core\mlas\lib\convolve.cpp'
+        if (Test-Path $convolve) {
+            $syContent = Get-Content $convolve -Raw
+            $marker = 'GetMlasPlatform().ConvNchwFloatKernel == MlasConvNchwFloatKernelAvx512F'
+            if ($syContent -notmatch [regex]::Escape($marker)) {
+                Fail "convolve AVX512F marker not found"
+            }
+            $syContent = $syContent.Replace($marker, 'false')
+            Set-Content -Path $convolve -Value $syContent -Encoding UTF8
+            Write-Host "convolve.cpp patched (AVX512F condition -> false)"
+        }
+        # 4) reorder.cpp: remove the AVX-512 fast-path CALL lines (the enclosing
+        #    if (BlockSize==16 ...) blocks stay, become empty, and fall through to
+        #    the SSE2 path below on every CPU).
+        $reorder = Join-Path $RepoDir 'onnxruntime\core\mlas\lib\reorder.cpp'
+        if (Test-Path $reorder) {
+            $roLines = Get-Content $reorder
+            $final = @()
+            $i = 0
+            while ($i -lt $roLines.Count) {
+                if ($roLines[$i] -match '(?i)MlasReorder(Input|Output)NchwBlock16Avx512F\(') {
+                    $i++
+                    if ($i -lt $roLines.Count -and $roLines[$i] -match '^\s*continue\s*;\s*$') {
+                        $i++
+                    }
+                    continue
+                }
+                $final += $roLines[$i]
+                $i++
+            }
+            $roContent = $final -join "`r`n"
+            Set-Content -Path $reorder -Value $roContent -Encoding UTF8
+            Write-Host "reorder.cpp patched (AVX-512 call lines and their continue removed)"
+        }
+        # 5) snchwc.h: the sliding-kernel selector compares the platform kernel to
+        #    the stripped AVX512F kernels and returns the Sliding kernel - replace
+        #    the ENTIRE condition with false so both symbols disappear.
+        $snchwcH = Join-Path $RepoDir 'onnxruntime\core\mlas\lib\snchwc.h'
+        if (Test-Path $snchwcH) {
+            $snContent = Get-Content $snchwcH -Raw
+            $cond = 'if (PlatformKernel == MlasConvDepthwiseFloatKernelAvx512F &&' + "`r`n" +
+                '        (BackendKernelSelectorConfig == nullptr ||' + "`r`n" +
+                '         BackendKernelSelectorConfig->nchwc_depthwise_sliding_kernel)) {'
+            if ($snContent -notmatch [regex]::Escape($cond)) {
+                Fail "snchwc.h AVX512F condition not found"
+            }
+            $snContent = $snContent.Replace($cond, 'if (false) {  // AVX512F kernels stripped')
+            # The `return MlasConvDepthwiseFloatKernelAvx512FSliding;` inside the
+            # dead block still references the stripped kernel - remove that line.
+            $snLines = $snContent -split "`r?`n"
+            $snLines = $snLines | Where-Object {
+                $_ -notmatch '^\s*return MlasConvDepthwiseFloatKernelAvx512FSliding\s*;\s*$'
+            }
+            $snContent = $snLines -join "`r`n"
+            Set-Content -Path $snchwcH -Value $snContent -Encoding UTF8
+            Write-Host "snchwc.h patched (entire sliding-kernel condition -> false, return removed)"
         }
     } else {
         Write-Host "platform.cpp not found at $platformCpp (informational)"
