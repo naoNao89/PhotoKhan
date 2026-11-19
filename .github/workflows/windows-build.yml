@@ -388,9 +388,14 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Write-Host '=== E1 start ==='
           $ws = $env:GITHUB_WORKSPACE
-          $sample = Join-Path $ws 'astronaut.png'
-          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/scikit-image/scikit-image/v0.14.2/skimage/data/astronaut.png' -OutFile $sample -UseBasicParsing -TimeoutSec 120
-          if (-not (Test-Path $sample)) { throw 'failed to download astronaut.png sample' }
+          $sample = Join-Path $ws 'biden.jpg'
+          # Single clear face required: scikit-image's astronaut.png has a face
+          # reflected in the helmet visor, so YuNet reports 2+ faces -> E003
+          # "ảnh có nhiều người" (observed: baseline rc=0, stripped rc=3 on the
+          # same input, kernel-dependent detection). biden.jpg (ageitgey/
+          # face_recognition examples, MIT) is a single-face portrait.
+          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/ageitgey/face_recognition/master/examples/biden.jpg' -OutFile $sample -UseBasicParsing -TimeoutSec 120
+          if (-not (Test-Path $sample)) { throw 'failed to download sample image' }
           $inputSha = (Get-FileHash $sample -Algorithm SHA256).Hash
           Write-Host "sample OK sha=$inputSha"
           Add-Content -Path $env:GITHUB_ENV -Value "PHK_INPUT_SHA=$inputSha"
@@ -444,7 +449,7 @@ jobs:
           # capi's models_dir() reads PHOTOKHAN_MODELS_DIR (host exe never calls
           # phk_set_models_dir); point it at the committed models/ dir.
           $env:PHOTOKHAN_MODELS_DIR = Join-Path $ws 'models'
-          $sample = Join-Path $ws 'astronaut.png'
+          $sample = Join-Path $ws 'biden.jpg'
           $dll = Join-Path $ws 'phk-dll-baseline\phk_dll.dll'
           if (-not (Test-Path $dll)) { throw "DLL missing: $dll" }
           $outDir = Join-Path $ws 'out-baseline-native'
@@ -470,7 +475,7 @@ jobs:
           Write-Host '=== E3 stripped-native start ==='
           $ws = $env:GITHUB_WORKSPACE
           $env:PHOTOKHAN_MODELS_DIR = Join-Path $ws 'models'
-          $sample = Join-Path $ws 'astronaut.png'
+          $sample = Join-Path $ws 'biden.jpg'
           $dll = Join-Path $ws 'phk-dll-stripped\phk_dll.dll'
           if (-not (Test-Path $dll)) { throw "DLL missing: $dll" }
           $outDir = Join-Path $ws 'out-stripped-native'
@@ -542,7 +547,7 @@ jobs:
           Write-Host '=== E5 baseline-ivb start ==='
           $ws = $env:GITHUB_WORKSPACE
           $env:PHOTOKHAN_MODELS_DIR = Join-Path $ws 'models'
-          $sample = Join-Path $ws 'astronaut.png'
+          $sample = Join-Path $ws 'biden.jpg'
           $dll = Join-Path $ws 'phk-dll-baseline\phk_dll.dll'
           $outDir = Join-Path $ws 'out-baseline-ivb'
           if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
@@ -566,7 +571,7 @@ jobs:
           Write-Host '=== E6 stripped-ivb start ==='
           $ws = $env:GITHUB_WORKSPACE
           $env:PHOTOKHAN_MODELS_DIR = Join-Path $ws 'models'
-          $sample = Join-Path $ws 'astronaut.png'
+          $sample = Join-Path $ws 'biden.jpg'
           $dll = Join-Path $ws 'phk-dll-stripped\phk_dll.dll'
           $outDir = Join-Path $ws 'out-stripped-ivb'
           if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
