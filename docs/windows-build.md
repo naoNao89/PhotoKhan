@@ -108,9 +108,9 @@ if ($rc -ne 0) {
 
 | Claim | Status |
 |---|---|
-| Build on windows-2022 runner (static ORT, no `onnxruntime.dll` in `phk_dll.dll`) | VERIFIED-BY-CI-RUN |
-| Native inference, baseline + stripped DLLs (deterministic input) | VERIFIED-BY-CI-RUN |
-| **Intel SDE Ivy Bridge (`-ivb -chip_check`): stripped DLL passes, baseline DLL reports chip-check violation** | VERIFIED-BY-CI-RUN (evidence: `test-*-ivb.log`, `report.json` — symbol/disassembly diagnostics in `avx-symbols.txt`, `avx-disasm.txt` are NOT treated as proof of executed instructions) |
+| Build on windows-2022 runner (static ORT, no `onnxruntime.dll` in `phk_dll.dll`) | VERIFIED-BY-CI-RUN (prior runs) |
+| Native inference, baseline + stripped DLLs (deterministic input) | PENDING — chờ run đầu của E-compat |
+| **Intel SDE Ivy Bridge (`-ivb -chip_check`): stripped DLL passes, baseline DLL reports chip-check violation** | PENDING — chờ run đầu của E-compat (evidence: `test-*-ivb.log`, `report.json` — symbol/disassembly diagnostics in `avx-symbols.txt`, `avx-disasm.txt` are NOT treated as proof of executed instructions) |
 | Physical i5-3570 (Windows 10) run | **UNVERIFIED** — reported separately; only a real machine run can confirm the SDE-simulated result |
 | Windows 10 runtime | UNVERIFIED (needs a real Windows 10 machine) |
 | MSVCP140 / VC++ redist on a clean Windows 10 | UNVERIFIED (present on the runner; the DLL imports `MSVCP140.dll`, so target machines need the Microsoft Visual C++ 2015–2022 x64 Redistributable) |
