@@ -408,10 +408,10 @@ jobs:
               '    private delegate int ProcessFn(byte[] i, byte[] o);',
               '    private delegate int LastErrorFn(byte[] b, UIntPtr c);',
               '    static ProcessFn _p; static LastErrorFn _e;',
-              '    static void Init(string dll) { IntPtr h = LoadLibrary(dll); if (h == IntPtr.Zero) { Console.Error.WriteLine("LoadLibrary failed err=" + Marshal.GetLastWin32Error()); Environment.Exit(10); } _p = (ProcessFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_process"), typeof(ProcessFn)); _e = (LastErrorFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_last_error"), typeof(LastErrorFn)); }',
+              '    static void Init(string dll) { IntPtr h = LoadLibrary(dll); if (h == IntPtr.Zero) { Console.Error.WriteLine("LoadLibrary failed err=" + Marshal.GetLastWin32Error()); Environment.Exit(10); } Console.WriteLine("host: LoadLibrary OK"); _p = (ProcessFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_process"), typeof(ProcessFn)); _e = (LastErrorFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_last_error"), typeof(LastErrorFn)); Console.WriteLine("host: GetProcAddress OK"); }',
               '    static byte[] Z(string s) { return Encoding.UTF8.GetBytes(s + "\0"); }',
               '    static string Err() { var b = new byte[1024]; _e(b, new UIntPtr((uint)b.Length)); int n = Array.IndexOf(b, (byte)0); return Encoding.UTF8.GetString(b, 0, n < 0 ? b.Length : n); }',
-              '    public static int Main(string[] args) { if (args.Length < 3) { Console.Error.WriteLine("usage: host dll input outdir"); return 9; } Init(args[0]); int rc = _p(Z(args[1]), Z(args[2])); if (rc != 0) { Console.Error.WriteLine("phk_process rc=" + rc + " err=" + Err()); } return rc; }',
+              '    public static int Main(string[] args) { if (args.Length < 3) { Console.Error.WriteLine("usage: host dll input outdir"); return 9; } Console.WriteLine("host: start dll=" + args[0] + " input=" + args[1] + " outdir=" + args[2]); Init(args[0]); int rc = _p(Z(args[1]), Z(args[2])); Console.WriteLine("host: phk_process returned rc=" + rc); if (rc != 0) { Console.Error.WriteLine("phk_process rc=" + rc + " err=" + Err()); } return rc; }',
               '}'
           ) -join [Environment]::NewLine
           $hostCs = Join-Path $ws 'phk-host.cs'
@@ -429,18 +429,23 @@ jobs:
           Set-ItemProperty $werKey DumpType 2 -Type DWord
           New-Item -ItemType Directory -Force -Path (Join-Path $ws 'crashdumps') | Out-Null
 
-          function Run-Test([string]$label, [string]$dll, [switch]$UseSde) {
+          function Run-Test([string]$label, [string]$dll, [switch]$UseSde, [int]$TimeoutSec = 180) {
+              Write-Host "arm $label : starting (timeout ${TimeoutSec}s)"
               $outDir = Join-Path $ws ("out-" + ($label -replace '[^A-Za-z0-9]',''))
               if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
               New-Item -ItemType Directory -Force -Path $outDir | Out-Null
               $log = Join-Path $ws ("test-" + $label + ".log")
               $err = Join-Path $ws ("test-" + $label + ".err.log")
-              if ($UseSde) {
-                  & (Join-Path $env:SDE_DIR 'sde.exe') -ivb -chip_check -- (Join-Path $ws 'phk-host.exe') $dll $sample $outDir *> $log 2>&1
-              } else {
-                  & (Join-Path $ws 'phk-host.exe') $dll $sample $outDir *> $log 2>&1
+              $exe = if ($UseSde) { Join-Path $env:SDE_DIR 'sde.exe' } else { Join-Path $ws 'phk-host.exe' }
+              $argList = if ($UseSde) { @('-ivb', '-chip_check', '--', (Join-Path $ws 'phk-host.exe'), $dll, $sample, $outDir) } else { @($dll, $sample, $outDir) }
+              $p = Start-Process -FilePath $exe -ArgumentList $argList -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
+              if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+                  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                  Write-Host "arm $label : TIMEOUT after ${TimeoutSec}s (process killed) - see test-$label.log"
+                  throw "arm $label TIMED OUT after ${TimeoutSec}s - process killed, see test-$label.log"
               }
-              $rc = $LASTEXITCODE
+              $rc = $p.ExitCode
+              Write-Host "arm $label : exited rc=$rc (see test-$label.log)"
               $jpg = Get-ChildItem -Path $outDir -File -Filter '*.jpg' -ErrorAction SilentlyContinue | Select-Object -First 1
               $jpgSha = if ($jpg) { (Get-FileHash $jpg.FullName -Algorithm SHA256).Hash } else { '' }
               [pscustomobject]@{ label = $label; rc = $rc; output_jpg = if ($jpg) { $jpg.Name } else { '' }; output_sha256 = $jpgSha }
