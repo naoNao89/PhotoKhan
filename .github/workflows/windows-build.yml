@@ -532,7 +532,8 @@ jobs:
           if (-not $ph.WaitForExit(60000)) { Stop-Process -Id $ph.Id -Force -ErrorAction SilentlyContinue; throw 'sde -help TIMED OUT after 60s' }
           Write-Host "sde -help rc=$($ph.ExitCode)"
           $helpText = Get-Content $helpOut -Raw -ErrorAction SilentlyContinue
-          if ($helpText -notmatch '-ivb' -or $helpText -notmatch 'chip_check') { throw 'SDE -ivb or -chip_check option missing from -help' }
+          # SDE -help spells it "chip-check" (hyphen); accept both forms.
+          if ($helpText -notmatch '-ivb' -or $helpText -notmatch 'chip[-_]check') { throw 'SDE -ivb or chip-check option missing from -help' }
           $license = Get-ChildItem -Path $sdeBin.Directory.FullName -Filter 'LICENSE*' | Select-Object -First 1
           if (-not $license) { throw 'SDE license file missing' }
           Copy-Item $license.FullName (Join-Path $ws 'sde-LICENSE.txt')
