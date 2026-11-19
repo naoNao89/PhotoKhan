@@ -501,31 +501,25 @@ jobs:
           Write-Host "stripped-native JPG $(if ($jpg) { $jpg.Name } else { '(none - E003)' }) sha=$jpgSha"
           Write-Host '=== E3 done ==='
 
-      - name: E4 - Download + verify Intel SDE (pinned 10.13.1)
+      - name: E4 - Install Intel SDE (pinned 10.13.1, GitHub-mirrored)
+        uses: petarpetrovt/setup-sde@v6.0
+        with:
+          sdeVersion: '10.13.1'
+
+      - name: E4b - Verify SDE (version, -ivb/-chip_check options, license)
         shell: pwsh
-        timeout-minutes: 10
+        timeout-minutes: 5
         run: |
           $ErrorActionPreference = 'Stop'
-          Write-Host '=== E4 SDE start ==='
+          Write-Host '=== E4b SDE verify start ==='
           $ws = $env:GITHUB_WORKSPACE
-          $sdeUrl = 'https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-win.tar.xz'
-          $sdeTarball = Join-Path $ws 'sde.tar.xz'
-          # curl.exe --max-time bounds the WHOLE transfer; pwsh Invoke-WebRequest
-          # -TimeoutSec only covers the request phase, so a stalled WAF-challenge
-          # response body can hold the connection open indefinitely (observed:
-          # E hung 4h48m in run 44562096813, 30:00 in 44617261047 - only the
-          # step timeout fired, never -TimeoutSec).
-          & curl.exe -L --fail --max-time 120 --retry 2 --retry-delay 5 -o $sdeTarball $sdeUrl
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $sdeTarball)) { throw "SDE download failed (curl exit $LASTEXITCODE)" }
-          Write-Host "sde tarball $((Get-Item $sdeTarball).Length) bytes"
-          $sdeDir = Join-Path $ws 'sde'
-          New-Item -ItemType Directory -Force -Path $sdeDir | Out-Null
-          tar -xf $sdeTarball -C $sdeDir
+          $sdeDir = $env:SDE_PATH
+          if (-not $sdeDir -or -not (Test-Path $sdeDir)) { throw "SDE_PATH not set or missing: $sdeDir" }
           $sdeBin = Get-ChildItem -Path $sdeDir -Recurse -Filter 'sde.exe' | Select-Object -First 1
-          if (-not $sdeBin) { throw 'sde.exe not found after extraction' }
+          if (-not $sdeBin) { throw 'sde.exe not found under SDE_PATH' }
           Write-Host "sde.exe at $($sdeBin.FullName)"
-          # sde -version/-help also get a hard timeout (a broken binary or a
-          # stalled process must not hang the job).
+          # sde -version/-help get a hard timeout (a broken binary or a stalled
+          # process must not hang the job).
           $verOut = Join-Path $ws 'sde-version.txt'
           $verErr = Join-Path $ws 'sde-version.err.log'
           $pv = Start-Process -FilePath $sdeBin.FullName -ArgumentList @('-version') -RedirectStandardOutput $verOut -RedirectStandardError $verErr -PassThru -WindowStyle Hidden
@@ -545,7 +539,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "PHK_SDE_VERSION=$ver"
           Add-Content -Path $env:GITHUB_ENV -Value "SDE_DIR=$($sdeBin.Directory.FullName)"
           Write-Host "sde version: $ver"
-          Write-Host '=== E4 done ==='
+          Write-Host '=== E4b done ==='
 
       - name: E5 - Arm baseline-ivb (expected chip-check violation = AVX2 evidence)
         shell: pwsh
