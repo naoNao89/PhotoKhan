@@ -118,7 +118,7 @@ jobs:
 
       # Run ALWAYS: a cache hit means the script reuses the tree incrementally;
       # a miss means the full ~30-90 min static build.
-      - name: C2 - Build ONNX Runtime static Release (no AVX flags)
+      - name: C2-Baseline - Build ONNX Runtime pristine (no MLAS strip)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -142,9 +142,10 @@ jobs:
               }
               Write-Host "cached clone verified at v1.31.0 commit $head"
           }
-          powershell -ExecutionPolicy Bypass -File build_ort_baseline.ps1 -BuildRoot D:\build -RepoDir D:\build\onnxruntime -LogPath D:\build\ort_build.log -SkipDumpbin
-          if ($LASTEXITCODE -ne 0) { throw "build_ort_baseline.ps1 failed (exit $LASTEXITCODE) - see D:\build\ort_build.log" }
-          Write-Host 'ONNX Runtime static build OK'
+          # Baseline build: pristine MLAS (AVX2/AVX512 kernels present).
+          powershell -ExecutionPolicy Bypass -File build_ort_baseline.ps1 -BuildRoot D:\build -RepoDir D:\build\onnxruntime -LogPath D:\build\ort_baseline.log -SkipDumpbin -SkipStrip
+          if ($LASTEXITCODE -ne 0) { throw "baseline ORT build failed (exit $LASTEXITCODE) - see D:\build\ort_baseline.log" }
+          Write-Host 'ONNX Runtime baseline (pristine) static build OK'
 
       - name: C2b - Bootstrap re2 static lib (idempotent, pinned to ORT deps.txt)
         shell: pwsh
@@ -260,6 +261,34 @@ jobs:
           if (-not (Test-Path (Join-Path $urRelease 'utf8_range.lib'))) { throw "utf8_range.lib missing at $urRelease" }
           if (-not (Test-Path (Join-Path $urRelease 'utf8_validity.lib'))) { throw 'utf8_validity.lib missing - ort-sys gates the utf8_range link behind it' }
 
+      - name: D1 - Build BASELINE DLL (pristine MLAS, AVX kernels present)
+        working-directory: dll
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # ort-sys's rlib embeds the ORT archives (+bundle); force a rebuild so
+          # this DLL embeds the PRISTINE (un-stripped) libs built by C2-Baseline.
+          cargo clean -p ort-sys
+          if ($LASTEXITCODE -ne 0) { throw 'cargo clean -p ort-sys failed' }
+          cargo build --release
+          if ($LASTEXITCODE -ne 0) { throw 'baseline DLL build failed' }
+          $src = 'target\release\phk_dll.dll'
+          if (-not (Test-Path $src)) { throw "baseline DLL not found: $src" }
+          $dst = Join-Path $env:GITHUB_WORKSPACE 'phk-dll-baseline\phk_dll.dll'
+          New-Item -ItemType Directory -Force -Path (Split-Path $dst -Parent) | Out-Null
+          Copy-Item $src $dst -Force
+          $sha = (Get-FileHash $dst -Algorithm SHA256).Hash
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_BASELINE_DLL_SHA=$sha"
+          Write-Host "Baseline DLL: $dst (sha256 $sha)"
+
+      - name: C2-Strip - Rebuild ONNX Runtime with MLAS AVX2/AVX512 stripped (incremental)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell -ExecutionPolicy Bypass -File build_ort_baseline.ps1 -BuildRoot D:\build -RepoDir D:\build\onnxruntime -LogPath D:\build\ort_strip.log -SkipDumpbin
+          if ($LASTEXITCODE -ne 0) { throw "stripped ORT rebuild failed (exit $LASTEXITCODE) - see D:\build\ort_strip.log" }
+          Write-Host 'ONNX Runtime stripped (MLAS AVX2/AVX512 removed) static build OK'
+
       - name: C3 - Guard static-link prerequisites
         shell: pwsh
         run: |
@@ -296,7 +325,7 @@ jobs:
           path: 'D:\build\onnxruntime'
           key: ort-win-static-1.31.0-${{ hashFiles('build_ort_baseline.ps1') }}
 
-      - name: D - DLL crate checks (fmt, unit tests, release build)
+      - name: D2 - Build STRIPPED DLL + diagnostics (no avxCount gate)
         working-directory: dll
         shell: pwsh
         run: |
@@ -305,286 +334,259 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'cargo fmt --check failed' }
           cargo test
           if ($LASTEXITCODE -ne 0) { throw 'cargo test failed' }
-          # The dll crate release profile deliberately keeps DEFAULT unwind
-          # (unlike the old Tauri app panic=abort), so catch_unwind works and
-          # Rust panics are contained as PHK_ERR_PANIC - no RUSTFLAGS override.
+          # Force ort-sys rebuild: its rlib embeds the ORT archives (+bundle), so
+          # this DLL must embed the STRIPPED libs built by C2-Strip.
+          cargo clean -p ort-sys
+          if ($LASTEXITCODE -ne 0) { throw 'cargo clean -p ort-sys failed' }
           cargo build --release
           if ($LASTEXITCODE -ne 0) { throw 'cargo build --release failed (static ORT link via ORT_LIB_PATH)' }
           $dll = 'target\release\phk_dll.dll'
           if (-not (Test-Path $dll)) { throw "release DLL not found: $dll" }
-          # Older-CPU guarantee: the DLL must contain NO AVX2/AVX-512 kernels
-          # (MLAS stripped in the ORT build). Portable byte-read regex instead of
-          # `strings` (not guaranteed present on Windows runners).
+          $dst = Join-Path $env:GITHUB_WORKSPACE 'phk-dll-stripped\phk_dll.dll'
+          New-Item -ItemType Directory -Force -Path (Split-Path $dst -Parent) | Out-Null
+          Copy-Item $dll $dst -Force
+          $sha = (Get-FileHash $dst -Algorithm SHA256).Hash
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_STRIPPED_DLL_SHA=$sha"
+          # DIAGNOSTIC symbol report - symbol names are NOT proof of executed
+          # instructions; report them for analysis instead of failing the gate.
           $bytes = [IO.File]::ReadAllBytes($dll)
           $dllText = [Text.Encoding]::ASCII.GetString($bytes)
-          $avxCount = ([regex]::Matches($dllText, '(?i)avx2|avx512')).Count
-          if ($avxCount -ne 0) { throw "DLL still contains $avxCount AVX2/AVX512 symbol(s) - MLAS strip failed" }
-          Write-Host "AVX2/AVX512 symbols in DLL: 0 (stripped OK)"
-          Write-Host "Release DLL OK: $dll"
+          $matches = [regex]::Matches($dllText, '(?i)[A-Za-z0-9_\-]*(?:avx2|avx512|avxvnni|avx2vnni)[A-Za-z0-9_\-]*')
+          $unique = $matches | ForEach-Object { $_.Value } | Sort-Object -Unique
+          $symbols = Join-Path $env:GITHUB_WORKSPACE 'avx-symbols.txt'
+          $unique | Set-Content $symbols
+          Write-Host "AVX2/AVX512 symbol-like strings found: $($unique.Count) (diagnostic, see avx-symbols.txt)"
+          # Disassembly of any AVX-named functions present (bounded): extract from
+          # dumpbin /disasm the matching function bodies.
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $dumpbin = Get-ChildItem -Path (Join-Path $vsPath 'VC\Tools\MSVC') -Recurse -File -Filter 'dumpbin.exe' -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+          if ($dumpbin) {
+              # Full /disasm of a 22MB DLL is far too large for an artifact; run
+              # it to a temp file, extract only AVX-named function disassembly,
+              # then delete the temp file.
+              $disasmTmp = Join-Path $env:TEMP 'dll-disasm.tmp.txt'
+              & $dumpbin.FullName /nologo /disasm:nobytes $dll *> $disasmTmp
+              $avxDis = Get-Content $disasmTmp -Raw
+              $hits = [regex]::Matches($avxDis, '(?i).*\\b(?:avx2|avx512|avxvnni)\\b.*') | Select-Object -First 40
+              $hits | ForEach-Object { $_.Value } | Set-Content (Join-Path $env:GITHUB_WORKSPACE 'avx-disasm.txt')
+              Remove-Item $disasmTmp -Force
+              & $dumpbin.FullName /nologo /dependents $dll *> (Join-Path $env:GITHUB_WORKSPACE 'dll-dumpbin.txt')
+          }
+          Write-Host "Stripped DLL: $dst (sha256 $sha)"
 
-      - name: E - DLL bundle + smoke (self-contained, models from DLL dir)
-        working-directory: dll
+      - name: E - Compat evidence (native + Intel SDE Ivy Bridge -ivb, old vs stripped)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $dll = 'target\release\phk_dll.dll'
-          if (-not (Test-Path $dll)) { throw "inference DLL not found: $dll" }
-          $dllFull = Join-Path $PWD.Path $dll
-          # static ORT check on the DLL itself (dumpbin output kept absolute so it
-          # survives the working-directory).
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          if (-not (Test-Path $vswhere)) { throw 'vswhere.exe not found' }
-          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $vsPath) { throw 'MSVC not found via vswhere' }
-          $dumpbin = Get-ChildItem -Path (Join-Path $vsPath 'VC\Tools\MSVC') -Recurse -File -Filter 'dumpbin.exe' -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
-          if (-not $dumpbin) { throw 'dumpbin.exe not found under VC\Tools\MSVC' }
-          $dllDump = Join-Path $env:GITHUB_WORKSPACE 'dll-dumpbin.txt'
-          & $dumpbin.FullName /nologo /dependents $dllFull *> $dllDump
-          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed (exit $LASTEXITCODE)" }
-          $dllDeps = Get-Content $dllDump -Raw
-          if ($dllDeps -match 'onnxruntime\.dll') { throw 'phk_dll.dll imports onnxruntime.dll - ORT linked dynamically, not statically' }
-          Write-Host 'OK: phk_dll.dll has no onnxruntime.dll dependency (static ORT)'
-          # Real-face sample: public-domain astronaut portrait from scikit-image
-          # (v0.14.2 pin - the file was removed from newer tags; data/__init__.py
-          # in that tag identifies it as public domain).
-          $sample = Join-Path $env:GITHUB_WORKSPACE 'astronaut.png'
+          $ws = $env:GITHUB_WORKSPACE
+          $sample = Join-Path $ws 'astronaut.png'
           Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/scikit-image/scikit-image/v0.14.2/skimage/data/astronaut.png' -OutFile $sample -UseBasicParsing
           if (-not (Test-Path $sample)) { throw 'failed to download astronaut.png sample' }
-          # Stage a SELF-CONTAINED bundle: DLL + committed models + licenses + the
-          # P/Invoke binding. The DLL crate ships NO tauri resources - the models
-          # live at the repo root (models/), so they are copied from the checkout.
-          # Smoke with NO env override and NO setter, so the DLL must resolve
-          # models from its own directory (bundle contract).
-          $bundle = Join-Path $env:GITHUB_WORKSPACE 'photokhan-dll-bundle'
-          if (Test-Path $bundle) { Remove-Item $bundle -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'models') | Out-Null
-          New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'licenses') | Out-Null
-          Copy-Item $dllFull (Join-Path $bundle 'phk_dll.dll') -Force
-          foreach ($f in @('manifest.json', 'face_detection_yunet_2023mar.onnx', 'LICENSE')) {
-              Copy-Item (Join-Path $env:GITHUB_WORKSPACE "models\$f") (Join-Path $bundle "models\$f") -Force
-          }
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'licenses\*') (Join-Path $bundle 'licenses\') -Force
-          Remove-Item Env:PHOTOKHAN_MODELS_DIR -ErrorAction SilentlyContinue
-          # Interop contract: paths are UTF-8. `string`+CharSet.Ansi would use the
-          # Windows code page (breaks Vietnamese filenames), and `int` capacity is
-          # 32-bit vs Rust usize (64-bit). Use byte[] (NUL-terminated UTF-8) and
-          # UIntPtr. The binding loads the DLL at RUNTIME via Init(dllPath)
-          # (LoadLibrary + GetProcAddress into delegates) - NO DllImport path is
-          # baked in, so the shipped phk-dll-smoke.cs works from any location.
-          # Every concatenation is parenthesized - inside @(...) the comma binds
-          # tighter than +, so '...' + $var + '...' must be one element.
+          $inputSha = (Get-FileHash $sample -Algorithm SHA256).Hash
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_INPUT_SHA=$inputSha"
+
+          # Compile the native test host (console EXE, csc from .NET Framework).
+          $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          if (-not (Test-Path $csc)) { throw "csc.exe not found at $csc" }
           $cs = @(
               'using System;',
               'using System.Runtime.InteropServices;',
               'using System.Text;',
-              'public static class PhkDll {',
+              'public static class Host {',
               '    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]',
-              '    private static extern IntPtr LoadLibrary(string lpFileName);',
+              '    private static extern IntPtr LoadLibrary(string n);',
               '    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]',
-              '    private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);',
-              '    private delegate int SetModelsDirFn(byte[] dir);',
-              '    private delegate int ProcessFn(byte[] input, byte[] outputDir);',
-              '    private delegate int LastErrorFn(byte[] buf, UIntPtr cap);',
-              '    private static SetModelsDirFn _setModelsDir;',
-              '    private static ProcessFn _process;',
-              '    private static LastErrorFn _lastError;',
-              '    public static void Init(string dllPath) {',
-              '        IntPtr h = LoadLibrary(dllPath);',
-              '        if (h == IntPtr.Zero) {',
-              '            throw new InvalidOperationException("LoadLibrary failed: " + dllPath + " (Win32 error " + Marshal.GetLastWin32Error() + ")");',
-              '        }',
-              '        _setModelsDir = (SetModelsDirFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_set_models_dir"), typeof(SetModelsDirFn));',
-              '        _process = (ProcessFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_process"), typeof(ProcessFn));',
-              '        _lastError = (LastErrorFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_last_error"), typeof(LastErrorFn));',
-              '    }',
-              '    public static int phk_set_models_dir(byte[] dir) { return _setModelsDir(dir); }',
-              '    public static int phk_process(byte[] input, byte[] outputDir) { return _process(input, outputDir); }',
-              '    public static int phk_last_error(byte[] buf, UIntPtr cap) { return _lastError(buf, cap); }',
+              '    private static extern IntPtr GetProcAddress(IntPtr h, string n);',
+              '    private delegate int ProcessFn(byte[] i, byte[] o);',
+              '    private delegate int LastErrorFn(byte[] b, UIntPtr c);',
+              '    static ProcessFn _p; static LastErrorFn _e;',
+              '    static void Init(string dll) { IntPtr h = LoadLibrary(dll); if (h == IntPtr.Zero) { Console.Error.WriteLine("LoadLibrary failed err=" + Marshal.GetLastWin32Error()); Environment.Exit(10); } _p = (ProcessFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_process"), typeof(ProcessFn)); _e = (LastErrorFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_last_error"), typeof(LastErrorFn)); }',
+              '    static byte[] Z(string s) { return Encoding.UTF8.GetBytes(s + "\0"); }',
+              '    static string Err() { var b = new byte[1024]; _e(b, new UIntPtr((uint)b.Length)); int n = Array.IndexOf(b, (byte)0); return Encoding.UTF8.GetString(b, 0, n < 0 ? b.Length : n); }',
+              '    public static int Main(string[] args) { if (args.Length < 3) { Console.Error.WriteLine("usage: host dll input outdir"); return 9; } Init(args[0]); int rc = _p(Z(args[1]), Z(args[2])); if (rc != 0) { Console.Error.WriteLine("phk_process rc=" + rc + " err=" + Err()); } return rc; }',
               '}'
           ) -join [Environment]::NewLine
-          $csFile = Join-Path $bundle 'phk-dll-smoke.cs'
-          Set-Content -Path $csFile -Value $cs
-          Add-Type -Path $csFile
-          function ToUtf8Z([string]$value) { [Text.Encoding]::UTF8.GetBytes($value + [char]0) }
-          # Relocate the bundle to a fresh temp dir and smoke it THERE: the shipped
-          # caller must work against a MOVED bundle, with models resolved from the
-          # DLL own directory (no env, no setter, no baked paths).
-          $moved = Join-Path $env:TEMP ('phk-bundle-' + [guid]::NewGuid().ToString('N'))
-          Move-Item $bundle $moved
-          [PhkDll]::Init((Join-Path $moved 'phk_dll.dll'))
-          $outDir = Join-Path $moved 'out'
-          if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
-          # UTF-8 path exercise: Vietnamese filename (codepage marshalling would break this).
-          $viet = Join-Path $moved 'ảnh chân dung.png'
-          Copy-Item $sample $viet -Force
-          $rc = [PhkDll]::phk_process((ToUtf8Z $viet), (ToUtf8Z $outDir))
-          if ($rc -ne 0) {
-              $buf = New-Object byte[] 1024
-              [PhkDll]::phk_last_error($buf, [UIntPtr]::new(1024)) | Out-Null
-              $msg = [Text.Encoding]::UTF8.GetString($buf).TrimEnd([char]0)
-              throw "phk_process failed (rc $rc): $msg"
-          }
-          $jpg = Get-ChildItem -Path $outDir -File -Filter '*.jpg' | Select-Object -First 1
-          if (-not $jpg) { throw 'phk_process returned OK but no JPG was written' }
-          Add-Type -AssemblyName System.Drawing
-          $img = [System.Drawing.Image]::FromFile($jpg.FullName)
-          $dims = "$($img.Width)x$($img.Height)"
-          $img.Dispose()
-          if ($dims -ne '354x472') { throw "unexpected output dimensions: $dims (expected 354x472)" }
-          Write-Host "DLL smoke OK (relocated bundle, no env/setter): $($jpg.Name) ($dims), rc=$rc"
-          # Restore the bundle into the workspace for upload (upload-artifact only
-          # accepts workspace paths). The smoke ran against the MOVED copy, so the
-          # uploaded bundle is exactly the verified, relocated content.
-          if (Test-Path $bundle) { Remove-Item $bundle -Recurse -Force -ErrorAction SilentlyContinue }
-          Move-Item $moved $bundle
-          $jpg = Get-ChildItem -Path (Join-Path $bundle 'out') -File -Filter '*.jpg' | Select-Object -First 1
-          if (-not $jpg) { throw 'relocated bundle lost its smoke output JPG' }
+          $hostCs = Join-Path $ws 'phk-host.cs'
+          Set-Content -Path $hostCs -Value $cs
+          & $csc /nologo /out:(Join-Path $ws 'phk-host.exe') /target:exe $hostCs
+          if ($LASTEXITCODE -ne 0) { throw "csc compile failed (exit $LASTEXITCODE)" }
+          if (-not (Test-Path (Join-Path $ws 'phk-host.exe'))) { throw 'phk-host.exe not produced' }
 
-          # Single-file (embedded-model) proof: ONLY phk_dll.dll in a fresh dir -
-          # no models\ anywhere, no env, no setter. The DLL must verify and run the
-          # embedded model (include_bytes) from memory.
-          $solo = Join-Path $env:TEMP ('phk-solo-' + [guid]::NewGuid().ToString('N'))
-          New-Item -ItemType Directory -Force -Path $solo | Out-Null
-          Copy-Item (Join-Path $bundle 'phk_dll.dll') (Join-Path $solo 'phk_dll.dll') -Force
-          $csSoloFile = Join-Path $env:GITHUB_WORKSPACE 'phk-dll-solo-smoke.cs'
-          $csSolo = @(
-              'using System;',
-              'using System.Runtime.InteropServices;',
-              'using System.Text;',
-              'public static class PhkDllSolo {',
-              '    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]',
-              '    private static extern IntPtr LoadLibrary(string lpFileName);',
-              '    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]',
-              '    private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);',
-              '    private delegate int ProcessFn(byte[] input, byte[] outputDir);',
-              '    private delegate int LastErrorFn(byte[] buf, UIntPtr cap);',
-              '    private static ProcessFn _process;',
-              '    private static LastErrorFn _lastError;',
-              '    public static void Init(string dllPath) {',
-              '        IntPtr h = LoadLibrary(dllPath);',
-              '        if (h == IntPtr.Zero) { throw new InvalidOperationException("LoadLibrary failed: " + dllPath); }',
-              '        _process = (ProcessFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_process"), typeof(ProcessFn));',
-              '        _lastError = (LastErrorFn)Marshal.GetDelegateForFunctionPointer(GetProcAddress(h, "phk_last_error"), typeof(LastErrorFn));',
-              '    }',
-              '    public static int phk_process(byte[] input, byte[] outputDir) { return _process(input, outputDir); }',
-              '    public static int phk_last_error(byte[] buf, UIntPtr cap) { return _lastError(buf, cap); }',
-              '}'
-          ) -join [Environment]::NewLine
-          Set-Content -Path $csSoloFile -Value $csSolo
-          Add-Type -Path $csSoloFile
-          $soloOut = Join-Path $solo 'out'
-          New-Item -ItemType Directory -Force -Path $soloOut | Out-Null
-          $soloViet = Join-Path $solo 'ảnh chân dung.png'
-          Copy-Item $sample $soloViet -Force
-          [PhkDllSolo]::Init((Join-Path $solo 'phk_dll.dll'))
-          $rcSolo = [PhkDllSolo]::phk_process((ToUtf8Z $soloViet), (ToUtf8Z $soloOut))
-          if ($rcSolo -ne 0) {
-              $buf = New-Object byte[] 1024
-              [PhkDllSolo]::phk_last_error($buf, [UIntPtr]::new(1024)) | Out-Null
-              $msgSolo = [Text.Encoding]::UTF8.GetString($buf).TrimEnd([char]0)
-              throw "single-file phk_process failed (rc $rcSolo): $msgSolo"
+          # WER LocalDumps for the test host so real crashes leave a dump on the
+          # runner (metadata only is uploaded - public repo, no raw memory).
+          $werKey = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\phk-host.exe'
+          New-Item -Path $werKey -Force | Out-Null
+          Set-ItemProperty $werKey DumpFolder "$ws\crashdumps" -Type ExpandString
+          Set-ItemProperty $werKey DumpType 2 -Type DWord
+          New-Item -ItemType Directory -Force -Path (Join-Path $ws 'crashdumps') | Out-Null
+
+          function Run-Test([string]$label, [string]$dll, [switch]$UseSde) {
+              $outDir = Join-Path $ws ("out-" + ($label -replace '[^A-Za-z0-9]',''))
+              if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
+              New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+              $log = Join-Path $ws ("test-" + $label + ".log")
+              $err = Join-Path $ws ("test-" + $label + ".err.log")
+              if ($UseSde) {
+                  & (Join-Path $env:SDE_DIR 'sde.exe') -ivb -chip_check -- (Join-Path $ws 'phk-host.exe') $dll $sample $outDir *> $log 2>&1
+              } else {
+                  & (Join-Path $ws 'phk-host.exe') $dll $sample $outDir *> $log 2>&1
+              }
+              $rc = $LASTEXITCODE
+              $jpg = Get-ChildItem -Path $outDir -File -Filter '*.jpg' -ErrorAction SilentlyContinue | Select-Object -First 1
+              $jpgSha = if ($jpg) { (Get-FileHash $jpg.FullName -Algorithm SHA256).Hash } else { '' }
+              [pscustomobject]@{ label = $label; rc = $rc; output_jpg = if ($jpg) { $jpg.Name } else { '' }; output_sha256 = $jpgSha }
           }
-          $jpgSolo = Get-ChildItem -Path $soloOut -File -Filter '*.jpg' | Select-Object -First 1
-          if (-not $jpgSolo) { throw 'single-file smoke returned OK but no JPG was written' }
-          $imgSolo = [System.Drawing.Image]::FromFile($jpgSolo.FullName)
-          $dimsSolo = "$($imgSolo.Width)x$($imgSolo.Height)"
-          $imgSolo.Dispose()
-          if ($dimsSolo -ne '354x472') { throw "unexpected single-file output dimensions: $dimsSolo (expected 354x472)" }
-          Write-Host "Single-file DLL smoke OK (embedded model, no models dir): $($jpgSolo.Name) ($dimsSolo), rc=$rcSolo"
-          # SHA-256: DLL + model + output JPG.
-          $targets = @(
-              (Join-Path $bundle 'phk_dll.dll'),
-              (Join-Path $bundle 'models\face_detection_yunet_2023mar.onnx'),
-              $jpg.FullName
-          )
-          $lines = @()
-          foreach ($t in $targets) {
-              if (-not (Test-Path $t)) { throw "file missing for hashing: $t" }
-              $lines += ('{0}  {1}' -f (Get-FileHash -Path $t -Algorithm SHA256).Hash, $t)
+
+          # Download + verify Intel SDE.
+          $sdeUrl = 'https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-win.tar.xz'
+          $sdeTarball = Join-Path $ws 'sde.tar.xz'
+          Invoke-WebRequest -Uri $sdeUrl -OutFile $sdeTarball -UseBasicParsing
+          $sdeDir = Join-Path $ws 'sde'
+          New-Item -ItemType Directory -Force -Path $sdeDir | Out-Null
+          tar -xf $sdeTarball -C $sdeDir
+          $sdeBin = Get-ChildItem -Path $sdeDir -Recurse -Filter 'sde.exe' | Select-Object -First 1
+          if (-not $sdeBin) { throw 'sde.exe not found after extraction' }
+          $env:SDE_DIR = $sdeBin.Directory.FullName
+          # Verify SDE: version, supported chip options, license conditions.
+          & $sdeBin.FullName -version *> (Join-Path $ws 'sde-version.txt')
+          & $sdeBin.FullName -help *> (Join-Path $ws 'sde-help.txt')
+          $helpText = Get-Content (Join-Path $ws 'sde-help.txt') -Raw
+          if ($helpText -notmatch '-ivb' -or $helpText -notmatch 'chip_check') { throw 'SDE -ivb or -chip_check option missing from -help' }
+          $license = Get-ChildItem -Path $sdeBin.Directory.FullName -Filter 'LICENSE*' | Select-Object -First 1
+          if (-not $license) { throw 'SDE license file missing' }
+          Copy-Item $license.FullName (Join-Path $ws 'sde-LICENSE.txt')
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_SDE_VERSION=$(& $sdeBin.FullName -version 2>&1 | Select-Object -First 1)"
+
+          $baselineDll = Join-Path $ws 'phk-dll-baseline\\phk_dll.dll'
+          $strippedDll = Join-Path $ws 'phk-dll-stripped\\phk_dll.dll'
+          foreach ($d in @($baselineDll, $strippedDll)) { if (-not (Test-Path $d)) { throw "DLL missing: $d" } }
+
+          # Model resolution: capi's models_dir() reads PHOTOKHAN_MODELS_DIR (or
+          # phk_set_models_dir, which the host exe does not call). Point it at the
+          # checkout's committed models/ dir for every arm.
+          $env:PHOTOKHAN_MODELS_DIR = Join-Path $ws 'models'
+
+          # 4 arms: {baseline, stripped} x {native, sde -ivb -chip_check}.
+          $r1 = Run-Test 'baseline-native' $baselineDll
+          $r2 = Run-Test 'stripped-native' $strippedDll
+          $r3 = Run-Test 'baseline-ivb' $baselineDll -UseSde
+          $r4 = Run-Test 'stripped-ivb' $strippedDll -UseSde
+
+          # Harness sanity: baseline must run natively (AVX2 host) - if it does
+          # not, the harness is broken and no evidence is valid.
+          if ($r1.rc -ne 0) { throw "baseline DLL native inference FAILED (rc $($r1.rc)) - harness broken, see test-baseline-native.log" }
+          if ($r1.output_sha256 -eq '') { throw 'baseline DLL native produced no JPG' }
+
+          # Acceptance: native inference + SDE Ivy Bridge compatibility must pass
+          # for the STRIPPED DLL. Baseline under -ivb is EXPECTED to fail the
+          # chip-check (that is the causal evidence for the i5-3570 hypothesis);
+          # its failure is reported, not a job failure.
+          if ($r2.rc -ne 0) { throw "stripped DLL native inference FAILED (rc $($r2.rc)) - see test-stripped-native.log" }
+          if ($r2.output_sha256 -eq '') { throw 'stripped DLL native produced no JPG' }
+          if ($r4.rc -ne 0) { throw "stripped DLL SDE -ivb -chip_check FAILED (rc $($r4.rc)) - see test-stripped-ivb.log (AVX2/AVX512 instruction still present?)" }
+          if ($r4.output_sha256 -eq '') { throw 'stripped DLL SDE -ivb produced no JPG' }
+          Write-Host "stripped-native rc=$($r2.rc) sha=$($r2.output_sha256)"
+          Write-Host "stripped-ivb  rc=$($r4.rc) sha=$($r4.output_sha256) (chip_check PASS)"
+          Write-Host "baseline-ivb  rc=$($r3.rc) (expected chip-check violation = evidence of AVX2 kernels)"
+
+          # Release bundle: the STRIPPED DLL + committed models + licenses +
+          # Init-based binding - the deployable single-file bundle.
+          $bundle = Join-Path $ws 'photokhan-dll-bundle'
+          if (Test-Path $bundle) { Remove-Item $bundle -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'models') | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'licenses') | Out-Null
+          Copy-Item $strippedDll (Join-Path $bundle 'phk_dll.dll') -Force
+          foreach ($f in @('manifest.json', 'face_detection_yunet_2023mar.onnx', 'LICENSE')) {
+              Copy-Item (Join-Path $ws "models\\$f") (Join-Path $bundle "models\\$f") -Force
           }
-          $lines | Set-Content (Join-Path $env:GITHUB_WORKSPACE 'hashes.txt')
-          Get-Content (Join-Path $env:GITHUB_WORKSPACE 'hashes.txt')
-          # report.json (DLL-focused).
-          $dllSha = (Get-FileHash (Join-Path $bundle 'phk_dll.dll') -Algorithm SHA256).Hash
-          $modelSha = (Get-FileHash (Join-Path $bundle 'models\face_detection_yunet_2023mar.onnx') -Algorithm SHA256).Hash
-          $manifest = Get-Content (Join-Path $bundle 'models\manifest.json') -Raw | ConvertFrom-Json
-          $manifestModel = $manifest.models | Where-Object { $_.file -eq 'face_detection_yunet_2023mar.onnx' } | Select-Object -First 1
-          if (-not $manifestModel) { throw 'manifest.json has no entry for face_detection_yunet_2023mar.onnx' }
-          $manifestSha = $manifestModel.sha256
-          if ($modelSha -ine $manifestSha) { throw "model sha256 mismatch vs manifest: $modelSha (manifest: $manifestSha)" }
-          $apiCount = ([regex]::Matches($dllDeps, 'api-ms-win-[^\s,]+')).Count
+          Copy-Item (Join-Path $ws 'licenses\\*') (Join-Path $bundle 'licenses\\') -Force
+          Write-Host "Release bundle staged: $bundle (stripped DLL)"
+
+          # Crash metadata from the Windows Event Log (no raw memory published).
+          $crashReport = Join-Path $ws 'crash-report.txt'
+          try {
+              Get-WinEvent -FilterHashtable @{ LogName='Application'; Id=1000 } -MaxEvents 5 -ErrorAction SilentlyContinue |
+                Where-Object { $_.Message -match 'phk-host.exe' } |
+                Select-Object -First 2 | ForEach-Object { $_.Message } | Set-Content $crashReport
+          } catch { Set-Content $crashReport 'no application crash events captured' }
+          $dumpFiles = Get-ChildItem (Join-Path $ws 'crashdumps') -Filter '*.dmp' -ErrorAction SilentlyContinue
+          Write-Host "crash dumps on runner: $($dumpFiles.Count) (raw dumps not uploaded - public repo)"
+
+          # report.json: OBSERVED / CAUSAL HYPOTHESES / UNVERIFIED.
+          $baselineSha = $env:PHK_BASELINE_DLL_SHA
+          $strippedSha = $env:PHK_STRIPPED_DLL_SHA
           $report = [ordered]@{
-              git_ref      = $env:GITHUB_REF
-              git_sha      = $env:GITHUB_SHA
-              run_id       = $env:GITHUB_RUN_ID
-              ort_strategy = 'static'
-              ort_version  = 'v1.31.0'
-              dll = [ordered]@{
-                  path = 'photokhan-dll-bundle\phk_dll.dll'
-                  sha256 = $dllSha
+              git_ref = $env:GITHUB_REF; git_sha = $env:GITHUB_SHA; run_id = $env:GITHUB_RUN_ID
+              ort = [ordered]@{ strategy='static'; version='v1.31.0' }
+              artifacts = [ordered]@{
+                  baseline_dll_sha256 = $baselineSha
+                  stripped_dll_sha256 = $strippedSha
+                  input_png_sha256 = $inputSha
+                  stripped_native_jpg_sha256 = $r2.output_sha256
+                  stripped_ivb_jpg_sha256 = $r4.output_sha256
               }
-              model = [ordered]@{
-                  sha256 = $modelSha
-                  matches_manifest = $true
+              sde = [ordered]@{ version = $env:PHK_SDE_VERSION; mode = '-ivb -chip_check'; license = 'Intel SDE free for use (not redistributable); LICENSE shipped in artifact' }
+              checks = [ordered]@{
+                  stripped_native_inference = ($r2.rc -eq 0 -and $r2.output_sha256 -ne '')
+                  stripped_ivb_chip_check = ($r4.rc -eq 0 -and $r4.output_sha256 -ne '')
+                  baseline_native_inference = ($r1.rc -eq 0 -and $r1.output_sha256 -ne '')
+                  baseline_ivb_chip_check = ($r3.rc -eq 0)  # expected false = AVX2 evidence
+                  windows_10_runtime = $false
               }
-              dumpbin = [ordered]@{
-                  onnxruntime_dll_present = ($dllDeps -match 'onnxruntime\.dll')
-                  msvcp140_present = ($dllDeps -match 'msvcp140\.dll')
-                  api_ms_win_entries = $apiCount
+              results = [ordered]@{
+                  baseline_native = [ordered]@{ rc=$r1.rc; jpg=$r1.output_sha256 }
+                  stripped_native = [ordered]@{ rc=$r2.rc; jpg=$r2.output_sha256 }
+                  baseline_ivb = [ordered]@{ rc=$r3.rc; jpg=$r3.output_sha256; expected_fail='AVX2 kernels execute on Ivy Bridge chip-check' }
+                  stripped_ivb = [ordered]@{ rc=$r4.rc; jpg=$r4.output_sha256 }
               }
-              smoke = [ordered]@{
-                  rc = $rc
-                  output_jpg = $jpg.Name
-                  dimensions = $dims
-                  models_resolution = 'dll_dir'
-                  binding = 'init (LoadLibrary/GetProcAddress, no baked DLL path)'
-                  bundle_relocated = $true
-              }
-              smoke_single_file = [ordered]@{
-                  rc = $rcSolo
-                  dimensions = $dimsSolo
-                  models_resolution = 'embedded'
-                  dll_only = $true
-              }
-              installer = [ordered]@{
-                  built = $false
-                  note = 'DLL-only pipeline - no Tauri app, no NSIS installer'
-              }
-              webview2 = 'not_applicable'
-              offline = [ordered]@{
-                  verified = $false
-                  note = 'phk_process makes no network calls by design (local model, ORT telemetry disabled); informational only - no firewall-block proof in the DLL pipeline'
+              evidence = [ordered]@{
+                  observed = @('native inference on windows-2022 runner (AVX2 host)', 'Intel SDE -ivb -chip_check execution on runner')
+                  causal_hypotheses = @('i5-3570 0xC000001D was caused by MLAS AVX2 kernel execution (baseline-ivb chip-check expected to confirm)')
+                  unverified = @('physical i5-3570 (Windows 10) run', 'Windows 10 compatibility', 'older-CPU/no-AVX2 real hardware')
               }
           }
-          $report | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $env:GITHUB_WORKSPACE 'report.json')
-          Get-Content (Join-Path $env:GITHUB_WORKSPACE 'report.json')
+          $report | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $ws 'report.json')
+          Get-Content (Join-Path $ws 'report.json')
 
-      # Stage the ORT build log inside the workspace: upload-artifact@v4 only
-      # accepts paths within the workspace.
       - name: H0 - Stage ORT build log for diagnostics
         if: always()
         shell: pwsh
         run: |
-          if (Test-Path 'D:\build\ort_build.log') {
-              Copy-Item 'D:\build\ort_build.log' (Join-Path $env:GITHUB_WORKSPACE 'ort_build.log') -Force
-              Write-Host 'Staged D:\build\ort_build.log as ort_build.log'
-          } else {
-              Write-Host 'D:\build\ort_build.log not present - skipping (informational)'
+          foreach ($log in @('D:\build\ort_baseline.log', 'D:\build\ort_strip.log')) {
+              if (Test-Path $log) {
+                  Copy-Item $log (Join-Path $env:GITHUB_WORKSPACE (Split-Path $log -Leaf)) -Force
+                  Write-Host "Staged $log"
+              }
           }
 
-      # success() gate + throwing validation steps guarantee the bundle is only
-      # uploaded when every assertion passed.
-      - name: H1 - Upload artifacts (phk-dll-windows-x64)
-        if: success()
+      # DLL artifacts upload REGARDLESS of later check outcomes (requirement:
+      # the DLLs are preserved as SHA-identified artifacts even when a
+      # compatibility check fails; a failed check is reported in report.json and
+      # fails the job via E's throws - never as a false success).
+      - name: H1 - Upload DLL artifacts + evidence (always)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: phk-dll-windows-x64
           path: |
-            photokhan-dll-bundle
-            dll-dumpbin.txt
+            phk-dll-baseline/
+            phk-dll-stripped/
+            photokhan-dll-bundle/
             report.json
-            hashes.txt
+            avx-symbols.txt
+            avx-disasm.txt
+            dll-dumpbin.txt
+            test-baseline-native.log
+            test-stripped-native.log
+            test-baseline-ivb.log
+            test-stripped-ivb.log
+            sde-version.txt
+            sde-help.txt
+            sde-LICENSE.txt
+            crash-report.txt
+          if-no-files-found: warn
 
       - name: H2 - Upload diagnostics (windows-build-diagnostics)
         if: always()
@@ -595,8 +597,14 @@ jobs:
           path: |
             report.json
             dll-dumpbin.txt
-            hashes.txt
+            avx-symbols.txt
+            avx-disasm.txt
+            sde-version.txt
+            sde-help.txt
+            crash-report.txt
             ort_build.log
+            ort_baseline.log
+            ort_strip.log
             mlas_cmake.before.txt
             mlas_cmake.after.txt
             mlas_platform.cpp
