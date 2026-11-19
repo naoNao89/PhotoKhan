@@ -354,8 +354,26 @@ try {
                 Fail "snchwc.h AVX512F block not found"
             }
             $snContent = $snContent.Replace($block, '')
+            # The removed block used BackendKernelSelectorConfig, so the parameter
+            # is now unreferenced -> C4100 under /WX. Mark it used by inserting
+            # (void)BackendKernelSelectorConfig; right after the function's opening
+            # brace.
+            $snLines = $snContent -split "`r?`n"
+            $out = @()
+            $inserted = $false
+            foreach ($line in $snLines) {
+                if (-not $inserted -and $line -match '^\s*\{\s*$' -and $out.Count -gt 0 -and $out[-1] -match '\)') {
+                    $out += $line
+                    $out += '        (void)BackendKernelSelectorConfig;'
+                    $inserted = $true
+                } else {
+                    $out += $line
+                }
+            }
+            if (-not $inserted) { Fail "snchwc.h: could not locate function body to mark param used" }
+            $snContent = $out -join "`r`n"
             Set-Content -Path $snchwcH -Value $snContent -Encoding UTF8
-            Write-Host "snchwc.h patched (AVX512F selector block removed)"
+            Write-Host "snchwc.h patched (AVX512F selector block removed, param marked used)"
         }
     } else {
         Write-Host "platform.cpp not found at $platformCpp (informational)"
