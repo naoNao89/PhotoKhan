@@ -383,11 +383,12 @@ jobs:
 
       - name: E - Compat evidence (native + Intel SDE Ivy Bridge -ivb, old vs stripped)
         shell: pwsh
+        timeout-minutes: 30
         run: |
           $ErrorActionPreference = 'Stop'
           $ws = $env:GITHUB_WORKSPACE
           $sample = Join-Path $ws 'astronaut.png'
-          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/scikit-image/scikit-image/v0.14.2/skimage/data/astronaut.png' -OutFile $sample -UseBasicParsing
+          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/scikit-image/scikit-image/v0.14.2/skimage/data/astronaut.png' -OutFile $sample -UseBasicParsing -TimeoutSec 120
           if (-not (Test-Path $sample)) { throw 'failed to download astronaut.png sample' }
           $inputSha = (Get-FileHash $sample -Algorithm SHA256).Hash
           Add-Content -Path $env:GITHUB_ENV -Value "PHK_INPUT_SHA=$inputSha"
@@ -448,7 +449,7 @@ jobs:
           # Download + verify Intel SDE.
           $sdeUrl = 'https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-win.tar.xz'
           $sdeTarball = Join-Path $ws 'sde.tar.xz'
-          Invoke-WebRequest -Uri $sdeUrl -OutFile $sdeTarball -UseBasicParsing
+          Invoke-WebRequest -Uri $sdeUrl -OutFile $sdeTarball -UseBasicParsing -TimeoutSec 120
           $sdeDir = Join-Path $ws 'sde'
           New-Item -ItemType Directory -Force -Path $sdeDir | Out-Null
           tar -xf $sdeTarball -C $sdeDir
