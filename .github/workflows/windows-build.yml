@@ -381,16 +381,18 @@ jobs:
           }
           Write-Host "Stripped DLL: $dst (sha256 $sha)"
 
-      - name: E - Compat evidence (native + Intel SDE Ivy Bridge -ivb, old vs stripped)
+      - name: E1 - Prepare host (sample, csc compile, WER)
         shell: pwsh
-        timeout-minutes: 30
+        timeout-minutes: 6
         run: |
           $ErrorActionPreference = 'Stop'
+          Write-Host '=== E1 start ==='
           $ws = $env:GITHUB_WORKSPACE
           $sample = Join-Path $ws 'astronaut.png'
           Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/scikit-image/scikit-image/v0.14.2/skimage/data/astronaut.png' -OutFile $sample -UseBasicParsing -TimeoutSec 120
           if (-not (Test-Path $sample)) { throw 'failed to download astronaut.png sample' }
           $inputSha = (Get-FileHash $sample -Algorithm SHA256).Hash
+          Write-Host "sample OK sha=$inputSha"
           Add-Content -Path $env:GITHUB_ENV -Value "PHK_INPUT_SHA=$inputSha"
 
           # Compile the native test host (console EXE, csc from .NET Framework).
@@ -417,9 +419,11 @@ jobs:
           $hostCs = Join-Path $ws 'phk-host.cs'
           Set-Content -Path $hostCs -Value $cs
           $hostExe = Join-Path $ws 'phk-host.exe'
+          Write-Host 'compiling phk-host.exe'
           & $csc /nologo "/out:$hostExe" /target:exe $hostCs
           if ($LASTEXITCODE -ne 0) { throw "csc compile failed (exit $LASTEXITCODE)" }
           if (-not (Test-Path $hostExe)) { throw 'phk-host.exe not produced' }
+          Write-Host "phk-host.exe OK $((Get-Item $hostExe).Length) bytes"
 
           # WER LocalDumps for the test host so real crashes leave a dump on the
           # runner (metadata only is uploaded - public repo, no raw memory).
@@ -428,93 +432,172 @@ jobs:
           Set-ItemProperty $werKey DumpFolder "$ws\crashdumps" -Type ExpandString
           Set-ItemProperty $werKey DumpType 2 -Type DWord
           New-Item -ItemType Directory -Force -Path (Join-Path $ws 'crashdumps') | Out-Null
+          Write-Host '=== E1 done ==='
 
-          function Run-Test([string]$label, [string]$dll, [switch]$UseSde, [int]$TimeoutSec = 180) {
-              Write-Host "arm $label : starting (timeout ${TimeoutSec}s)"
-              $outDir = Join-Path $ws ("out-" + ($label -replace '[^A-Za-z0-9]',''))
-              if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
-              New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-              $log = Join-Path $ws ("test-" + $label + ".log")
-              $err = Join-Path $ws ("test-" + $label + ".err.log")
-              $exe = if ($UseSde) { Join-Path $env:SDE_DIR 'sde.exe' } else { Join-Path $ws 'phk-host.exe' }
-              $argList = if ($UseSde) { @('-ivb', '-chip_check', '--', (Join-Path $ws 'phk-host.exe'), $dll, $sample, $outDir) } else { @($dll, $sample, $outDir) }
-              $p = Start-Process -FilePath $exe -ArgumentList $argList -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
-              if (-not $p.WaitForExit($TimeoutSec * 1000)) {
-                  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-                  Write-Host "arm $label : TIMEOUT after ${TimeoutSec}s (process killed) - see test-$label.log"
-                  throw "arm $label TIMED OUT after ${TimeoutSec}s - process killed, see test-$label.log"
-              }
-              $rc = $p.ExitCode
-              Write-Host "arm $label : exited rc=$rc (see test-$label.log)"
-              $jpg = Get-ChildItem -Path $outDir -File -Filter '*.jpg' -ErrorAction SilentlyContinue | Select-Object -First 1
-              $jpgSha = if ($jpg) { (Get-FileHash $jpg.FullName -Algorithm SHA256).Hash } else { '' }
-              [pscustomobject]@{ label = $label; rc = $rc; output_jpg = if ($jpg) { $jpg.Name } else { '' }; output_sha256 = $jpgSha }
-          }
+      - name: E2 - Arm baseline-native (harness sanity)
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '=== E2 baseline-native start ==='
+          $ws = $env:GITHUB_WORKSPACE
+          # capi's models_dir() reads PHOTOKHAN_MODELS_DIR (host exe never calls
+          # phk_set_models_dir); point it at the committed models/ dir.
+          $env:PHOTOKHAN_MODELS_DIR = Join-Path $ws 'models'
+          $sample = Join-Path $ws 'astronaut.png'
+          $dll = Join-Path $ws 'phk-dll-baseline\phk_dll.dll'
+          if (-not (Test-Path $dll)) { throw "DLL missing: $dll" }
+          $outDir = Join-Path $ws 'out-baseline-native'
+          if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $log = Join-Path $ws 'test-baseline-native.log'
+          $err = Join-Path $ws 'test-baseline-native.err.log'
+          $p = Start-Process -FilePath (Join-Path $ws 'phk-host.exe') -ArgumentList @($dll, $sample, $outDir) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
+          if (-not $p.WaitForExit(180000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw 'baseline-native TIMED OUT after 180s - see test-baseline-native.log' }
+          Write-Host "baseline-native rc=$($p.ExitCode) (see test-baseline-native.log)"
+          if ($p.ExitCode -ne 0) { throw "baseline DLL native inference FAILED (rc $($p.ExitCode)) - harness broken, see test-baseline-native.log" }
+          $jpg = Get-ChildItem -Path $outDir -File -Filter '*.jpg' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $jpg) { throw 'baseline DLL native produced no JPG' }
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_BASELINE_NATIVE_JPG=$((Get-FileHash $jpg.FullName -Algorithm SHA256).Hash)"
+          Write-Host "baseline-native JPG $($jpg.Name) sha=$((Get-FileHash $jpg.FullName -Algorithm SHA256).Hash)"
+          Write-Host '=== E2 done ==='
 
-          # Download + verify Intel SDE.
+      - name: E3 - Arm stripped-native
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '=== E3 stripped-native start ==='
+          $ws = $env:GITHUB_WORKSPACE
+          $env:PHOTOKHAN_MODELS_DIR = Join-Path $ws 'models'
+          $sample = Join-Path $ws 'astronaut.png'
+          $dll = Join-Path $ws 'phk-dll-stripped\phk_dll.dll'
+          if (-not (Test-Path $dll)) { throw "DLL missing: $dll" }
+          $outDir = Join-Path $ws 'out-stripped-native'
+          if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $log = Join-Path $ws 'test-stripped-native.log'
+          $err = Join-Path $ws 'test-stripped-native.err.log'
+          $p = Start-Process -FilePath (Join-Path $ws 'phk-host.exe') -ArgumentList @($dll, $sample, $outDir) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
+          if (-not $p.WaitForExit(180000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw 'stripped-native TIMED OUT after 180s - see test-stripped-native.log' }
+          Write-Host "stripped-native rc=$($p.ExitCode) (see test-stripped-native.log)"
+          if ($p.ExitCode -ne 0) { throw "stripped DLL native inference FAILED (rc $($p.ExitCode)) - see test-stripped-native.log" }
+          $jpg = Get-ChildItem -Path $outDir -File -Filter '*.jpg' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $jpg) { throw 'stripped DLL native produced no JPG' }
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_STRIPPED_NATIVE_JPG=$((Get-FileHash $jpg.FullName -Algorithm SHA256).Hash)"
+          Write-Host "stripped-native JPG $($jpg.Name) sha=$((Get-FileHash $jpg.FullName -Algorithm SHA256).Hash)"
+          Write-Host '=== E3 done ==='
+
+      - name: E4 - Download + verify Intel SDE (pinned 10.13.1)
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '=== E4 SDE start ==='
+          $ws = $env:GITHUB_WORKSPACE
           $sdeUrl = 'https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-win.tar.xz'
           $sdeTarball = Join-Path $ws 'sde.tar.xz'
           Invoke-WebRequest -Uri $sdeUrl -OutFile $sdeTarball -UseBasicParsing -TimeoutSec 120
+          if (-not (Test-Path $sdeTarball)) { throw 'SDE tarball download failed' }
+          Write-Host "sde tarball $((Get-Item $sdeTarball).Length) bytes"
           $sdeDir = Join-Path $ws 'sde'
           New-Item -ItemType Directory -Force -Path $sdeDir | Out-Null
           tar -xf $sdeTarball -C $sdeDir
           $sdeBin = Get-ChildItem -Path $sdeDir -Recurse -Filter 'sde.exe' | Select-Object -First 1
           if (-not $sdeBin) { throw 'sde.exe not found after extraction' }
-          $env:SDE_DIR = $sdeBin.Directory.FullName
-          # Verify SDE: version, supported chip options, license conditions.
-          & $sdeBin.FullName -version *> (Join-Path $ws 'sde-version.txt')
-          & $sdeBin.FullName -help *> (Join-Path $ws 'sde-help.txt')
-          $helpText = Get-Content (Join-Path $ws 'sde-help.txt') -Raw
+          Write-Host "sde.exe at $($sdeBin.FullName)"
+          # sde -version/-help also get a hard timeout (a broken binary or a
+          # stalled process must not hang the job).
+          $verOut = Join-Path $ws 'sde-version.txt'
+          $verErr = Join-Path $ws 'sde-version.err.log'
+          $pv = Start-Process -FilePath $sdeBin.FullName -ArgumentList @('-version') -RedirectStandardOutput $verOut -RedirectStandardError $verErr -PassThru -WindowStyle Hidden
+          if (-not $pv.WaitForExit(60000)) { Stop-Process -Id $pv.Id -Force -ErrorAction SilentlyContinue; throw 'sde -version TIMED OUT after 60s' }
+          Write-Host "sde -version rc=$($pv.ExitCode)"
+          $helpOut = Join-Path $ws 'sde-help.txt'
+          $helpErr = Join-Path $ws 'sde-help.err.log'
+          $ph = Start-Process -FilePath $sdeBin.FullName -ArgumentList @('-help') -RedirectStandardOutput $helpOut -RedirectStandardError $helpErr -PassThru -WindowStyle Hidden
+          if (-not $ph.WaitForExit(60000)) { Stop-Process -Id $ph.Id -Force -ErrorAction SilentlyContinue; throw 'sde -help TIMED OUT after 60s' }
+          Write-Host "sde -help rc=$($ph.ExitCode)"
+          $helpText = Get-Content $helpOut -Raw -ErrorAction SilentlyContinue
           if ($helpText -notmatch '-ivb' -or $helpText -notmatch 'chip_check') { throw 'SDE -ivb or -chip_check option missing from -help' }
           $license = Get-ChildItem -Path $sdeBin.Directory.FullName -Filter 'LICENSE*' | Select-Object -First 1
           if (-not $license) { throw 'SDE license file missing' }
           Copy-Item $license.FullName (Join-Path $ws 'sde-LICENSE.txt')
-          Add-Content -Path $env:GITHUB_ENV -Value "PHK_SDE_VERSION=$(& $sdeBin.FullName -version 2>&1 | Select-Object -First 1)"
+          $ver = (Get-Content $verOut -Raw).Split("`n")[0]
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_SDE_VERSION=$ver"
+          Add-Content -Path $env:GITHUB_ENV -Value "SDE_DIR=$($sdeBin.Directory.FullName)"
+          Write-Host "sde version: $ver"
+          Write-Host '=== E4 done ==='
 
-          $baselineDll = Join-Path $ws 'phk-dll-baseline\\phk_dll.dll'
-          $strippedDll = Join-Path $ws 'phk-dll-stripped\\phk_dll.dll'
-          foreach ($d in @($baselineDll, $strippedDll)) { if (-not (Test-Path $d)) { throw "DLL missing: $d" } }
-
-          # Model resolution: capi's models_dir() reads PHOTOKHAN_MODELS_DIR (or
-          # phk_set_models_dir, which the host exe does not call). Point it at the
-          # checkout's committed models/ dir for every arm.
+      - name: E5 - Arm baseline-ivb (expected chip-check violation = AVX2 evidence)
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '=== E5 baseline-ivb start ==='
+          $ws = $env:GITHUB_WORKSPACE
           $env:PHOTOKHAN_MODELS_DIR = Join-Path $ws 'models'
+          $sample = Join-Path $ws 'astronaut.png'
+          $dll = Join-Path $ws 'phk-dll-baseline\phk_dll.dll'
+          $outDir = Join-Path $ws 'out-baseline-ivb'
+          if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $log = Join-Path $ws 'test-baseline-ivb.log'
+          $err = Join-Path $ws 'test-baseline-ivb.err.log'
+          $sdeExe = Join-Path $env:SDE_DIR 'sde.exe'
+          $p = Start-Process -FilePath $sdeExe -ArgumentList @('-ivb', '-chip_check', '--', (Join-Path $ws 'phk-host.exe'), $dll, $sample, $outDir) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
+          if (-not $p.WaitForExit(240000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Write-Host 'baseline-ivb TIMED OUT after 240s'; throw 'baseline-ivb TIMED OUT after 240s - see test-baseline-ivb.log' }
+          Write-Host "baseline-ivb rc=$($p.ExitCode) (expected non-zero = chip_check caught an out-of-ISA instruction; see test-baseline-ivb.log)"
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_BASELINE_IVB_RC=$($p.ExitCode)"
+          $jpg = Get-ChildItem -Path $outDir -File -Filter '*.jpg' -ErrorAction SilentlyContinue | Select-Object -First 1
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_BASELINE_IVB_JPG=$(if ($jpg) { (Get-FileHash $jpg.FullName -Algorithm SHA256).Hash } else { '' })"
+          Write-Host '=== E5 done ==='
 
-          # 4 arms: {baseline, stripped} x {native, sde -ivb -chip_check}.
-          $r1 = Run-Test 'baseline-native' $baselineDll
-          $r2 = Run-Test 'stripped-native' $strippedDll
-          $r3 = Run-Test 'baseline-ivb' $baselineDll -UseSde
-          $r4 = Run-Test 'stripped-ivb' $strippedDll -UseSde
+      - name: E6 - Arm stripped-ivb (acceptance, must pass chip_check)
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '=== E6 stripped-ivb start ==='
+          $ws = $env:GITHUB_WORKSPACE
+          $env:PHOTOKHAN_MODELS_DIR = Join-Path $ws 'models'
+          $sample = Join-Path $ws 'astronaut.png'
+          $dll = Join-Path $ws 'phk-dll-stripped\phk_dll.dll'
+          $outDir = Join-Path $ws 'out-stripped-ivb'
+          if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $log = Join-Path $ws 'test-stripped-ivb.log'
+          $err = Join-Path $ws 'test-stripped-ivb.err.log'
+          $sdeExe = Join-Path $env:SDE_DIR 'sde.exe'
+          $p = Start-Process -FilePath $sdeExe -ArgumentList @('-ivb', '-chip_check', '--', (Join-Path $ws 'phk-host.exe'), $dll, $sample, $outDir) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
+          if (-not $p.WaitForExit(240000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw 'stripped-ivb TIMED OUT after 240s - see test-stripped-ivb.log' }
+          Write-Host "stripped-ivb rc=$($p.ExitCode) (see test-stripped-ivb.log)"
+          if ($p.ExitCode -ne 0) { throw "stripped DLL SDE -ivb -chip_check FAILED (rc $($p.ExitCode)) - see test-stripped-ivb.log (AVX2/AVX512 instruction still present?)" }
+          $jpg = Get-ChildItem -Path $outDir -File -Filter '*.jpg' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $jpg) { throw 'stripped DLL SDE -ivb produced no JPG' }
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_STRIPPED_IVB_JPG=$((Get-FileHash $jpg.FullName -Algorithm SHA256).Hash)"
+          Write-Host "stripped-ivb JPG $($jpg.Name) sha=$((Get-FileHash $jpg.FullName -Algorithm SHA256).Hash)"
+          Write-Host '=== E6 done ==='
 
-          # Harness sanity: baseline must run natively (AVX2 host) - if it does
-          # not, the harness is broken and no evidence is valid.
-          if ($r1.rc -ne 0) { throw "baseline DLL native inference FAILED (rc $($r1.rc)) - harness broken, see test-baseline-native.log" }
-          if ($r1.output_sha256 -eq '') { throw 'baseline DLL native produced no JPG' }
-
-          # Acceptance: native inference + SDE Ivy Bridge compatibility must pass
-          # for the STRIPPED DLL. Baseline under -ivb is EXPECTED to fail the
-          # chip-check (that is the causal evidence for the i5-3570 hypothesis);
-          # its failure is reported, not a job failure.
-          if ($r2.rc -ne 0) { throw "stripped DLL native inference FAILED (rc $($r2.rc)) - see test-stripped-native.log" }
-          if ($r2.output_sha256 -eq '') { throw 'stripped DLL native produced no JPG' }
-          if ($r4.rc -ne 0) { throw "stripped DLL SDE -ivb -chip_check FAILED (rc $($r4.rc)) - see test-stripped-ivb.log (AVX2/AVX512 instruction still present?)" }
-          if ($r4.output_sha256 -eq '') { throw 'stripped DLL SDE -ivb produced no JPG' }
-          Write-Host "stripped-native rc=$($r2.rc) sha=$($r2.output_sha256)"
-          Write-Host "stripped-ivb  rc=$($r4.rc) sha=$($r4.output_sha256) (chip_check PASS)"
-          Write-Host "baseline-ivb  rc=$($r3.rc) (expected chip-check violation = evidence of AVX2 kernels)"
-
-          # Release bundle: the STRIPPED DLL + committed models + licenses +
-          # Init-based binding - the deployable single-file bundle.
+      - name: E7 - Release bundle + report + crash metadata
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '=== E7 start ==='
+          $ws = $env:GITHUB_WORKSPACE
+          # Release bundle: the STRIPPED DLL + committed models + licenses.
+          $strippedDll = Join-Path $ws 'phk-dll-stripped\phk_dll.dll'
           $bundle = Join-Path $ws 'photokhan-dll-bundle'
           if (Test-Path $bundle) { Remove-Item $bundle -Recurse -Force }
           New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'models') | Out-Null
           New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'licenses') | Out-Null
           Copy-Item $strippedDll (Join-Path $bundle 'phk_dll.dll') -Force
           foreach ($f in @('manifest.json', 'face_detection_yunet_2023mar.onnx', 'LICENSE')) {
-              Copy-Item (Join-Path $ws "models\\$f") (Join-Path $bundle "models\\$f") -Force
+              Copy-Item (Join-Path $ws "models\$f") (Join-Path $bundle "models\$f") -Force
           }
-          Copy-Item (Join-Path $ws 'licenses\\*') (Join-Path $bundle 'licenses\\') -Force
-          Write-Host "Release bundle staged: $bundle (stripped DLL)"
+          Copy-Item (Join-Path $ws 'licenses\*') (Join-Path $bundle 'licenses\') -Force
+          Write-Host "release bundle staged: $bundle"
 
           # Crash metadata from the Windows Event Log (no raw memory published).
           $crashReport = Join-Path $ws 'crash-report.txt'
@@ -529,29 +612,30 @@ jobs:
           # report.json: OBSERVED / CAUSAL HYPOTHESES / UNVERIFIED.
           $baselineSha = $env:PHK_BASELINE_DLL_SHA
           $strippedSha = $env:PHK_STRIPPED_DLL_SHA
+          $baselineIvb = [int]$env:PHK_BASELINE_IVB_RC
           $report = [ordered]@{
               git_ref = $env:GITHUB_REF; git_sha = $env:GITHUB_SHA; run_id = $env:GITHUB_RUN_ID
               ort = [ordered]@{ strategy='static'; version='v1.31.0' }
               artifacts = [ordered]@{
                   baseline_dll_sha256 = $baselineSha
                   stripped_dll_sha256 = $strippedSha
-                  input_png_sha256 = $inputSha
-                  stripped_native_jpg_sha256 = $r2.output_sha256
-                  stripped_ivb_jpg_sha256 = $r4.output_sha256
+                  input_png_sha256 = $env:PHK_INPUT_SHA
+                  stripped_native_jpg_sha256 = $env:PHK_STRIPPED_NATIVE_JPG
+                  stripped_ivb_jpg_sha256 = $env:PHK_STRIPPED_IVB_JPG
               }
               sde = [ordered]@{ version = $env:PHK_SDE_VERSION; mode = '-ivb -chip_check'; license = 'Intel SDE free for use (not redistributable); LICENSE shipped in artifact' }
               checks = [ordered]@{
-                  stripped_native_inference = ($r2.rc -eq 0 -and $r2.output_sha256 -ne '')
-                  stripped_ivb_chip_check = ($r4.rc -eq 0 -and $r4.output_sha256 -ne '')
-                  baseline_native_inference = ($r1.rc -eq 0 -and $r1.output_sha256 -ne '')
-                  baseline_ivb_chip_check = ($r3.rc -eq 0)  # expected false = AVX2 evidence
+                  stripped_native_inference = $true   # E3 threw otherwise
+                  stripped_ivb_chip_check = $true     # E6 threw otherwise
+                  baseline_native_inference = $true   # E2 threw otherwise
+                  baseline_ivb_chip_check = ($baselineIvb -eq 0)  # expected false = AVX2 evidence
                   windows_10_runtime = $false
               }
               results = [ordered]@{
-                  baseline_native = [ordered]@{ rc=$r1.rc; jpg=$r1.output_sha256 }
-                  stripped_native = [ordered]@{ rc=$r2.rc; jpg=$r2.output_sha256 }
-                  baseline_ivb = [ordered]@{ rc=$r3.rc; jpg=$r3.output_sha256; expected_fail='AVX2 kernels execute on Ivy Bridge chip-check' }
-                  stripped_ivb = [ordered]@{ rc=$r4.rc; jpg=$r4.output_sha256 }
+                  baseline_native = [ordered]@{ rc = '0'; jpg = $env:PHK_BASELINE_NATIVE_JPG }
+                  stripped_native = [ordered]@{ rc = '0'; jpg = $env:PHK_STRIPPED_NATIVE_JPG }
+                  baseline_ivb = [ordered]@{ rc = $baselineIvb; jpg = $env:PHK_BASELINE_IVB_JPG; expected_fail = 'AVX2 kernels execute on Ivy Bridge chip-check' }
+                  stripped_ivb = [ordered]@{ rc = '0'; jpg = $env:PHK_STRIPPED_IVB_JPG }
               }
               evidence = [ordered]@{
                   observed = @('native inference on windows-2022 runner (AVX2 host)', 'Intel SDE -ivb -chip_check execution on runner')
