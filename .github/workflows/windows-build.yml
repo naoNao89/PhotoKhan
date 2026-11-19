@@ -505,6 +505,7 @@ jobs:
         uses: petarpetrovt/setup-sde@v6.0
         with:
           sdeVersion: '10.13.1'
+          environmentVariableName: 'SDE_DIR'
 
       - name: E4b - Verify SDE (version, -ivb/-chip_check options, license)
         shell: pwsh
@@ -513,10 +514,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Write-Host '=== E4b SDE verify start ==='
           $ws = $env:GITHUB_WORKSPACE
-          $sdeDir = $env:SDE_PATH
-          if (-not $sdeDir -or -not (Test-Path $sdeDir)) { throw "SDE_PATH not set or missing: $sdeDir" }
+          $sdeDir = $env:SDE_DIR
+          if (-not $sdeDir -or -not (Test-Path $sdeDir)) { throw "SDE_DIR not set or missing: $sdeDir" }
           $sdeBin = Get-ChildItem -Path $sdeDir -Recurse -Filter 'sde.exe' | Select-Object -First 1
-          if (-not $sdeBin) { throw 'sde.exe not found under SDE_PATH' }
+          if (-not $sdeBin) { throw 'sde.exe not found under SDE_DIR' }
           Write-Host "sde.exe at $($sdeBin.FullName)"
           # sde -version/-help get a hard timeout (a broken binary or a stalled
           # process must not hang the job).
