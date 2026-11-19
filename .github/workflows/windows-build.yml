@@ -497,8 +497,13 @@ jobs:
           $ws = $env:GITHUB_WORKSPACE
           $sdeUrl = 'https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-win.tar.xz'
           $sdeTarball = Join-Path $ws 'sde.tar.xz'
-          Invoke-WebRequest -Uri $sdeUrl -OutFile $sdeTarball -UseBasicParsing -TimeoutSec 120
-          if (-not (Test-Path $sdeTarball)) { throw 'SDE tarball download failed' }
+          # curl.exe --max-time bounds the WHOLE transfer; pwsh Invoke-WebRequest
+          # -TimeoutSec only covers the request phase, so a stalled WAF-challenge
+          # response body can hold the connection open indefinitely (observed:
+          # E hung 4h48m in run 44562096813, 30:00 in 44617261047 - only the
+          # step timeout fired, never -TimeoutSec).
+          & curl.exe -L --fail --max-time 120 --retry 2 --retry-delay 5 -o $sdeTarball $sdeUrl
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $sdeTarball)) { throw "SDE download failed (curl exit $LASTEXITCODE)" }
           Write-Host "sde tarball $((Get-Item $sdeTarball).Length) bytes"
           $sdeDir = Join-Path $ws 'sde'
           New-Item -ItemType Directory -Force -Path $sdeDir | Out-Null
@@ -675,9 +680,13 @@ jobs:
             avx-disasm.txt
             dll-dumpbin.txt
             test-baseline-native.log
+            test-baseline-native.err.log
             test-stripped-native.log
+            test-stripped-native.err.log
             test-baseline-ivb.log
+            test-baseline-ivb.err.log
             test-stripped-ivb.log
+            test-stripped-ivb.err.log
             sde-version.txt
             sde-help.txt
             sde-LICENSE.txt
