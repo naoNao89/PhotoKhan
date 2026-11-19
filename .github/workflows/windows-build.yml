@@ -559,12 +559,18 @@ jobs:
           $log = Join-Path $ws 'test-baseline-ivb.log'
           $err = Join-Path $ws 'test-baseline-ivb.err.log'
           $sdeExe = Join-Path $env:SDE_DIR 'sde.exe'
-          $p = Start-Process -FilePath $sdeExe -ArgumentList @('-ivb', '-chip_check', '--', (Join-Path $ws 'phk-host.exe'), $dll, $sample, $outDir) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
+          # -ivb alone enables chip-check for Ivy Bridge (help: "Set chip-check
+          # and CPUID for Intel(R) Ivy Bridge CPU"); SDE 10.13.1's bare
+          # -chip-check switch demands an argument ("SDE ERROR: Need an
+          # argument after the -chip-check switch") - a usage error, not
+          # evidence. Violation pattern is narrowed to actual instruction
+          # messages so CLI errors cannot masquerade as AVX2 evidence.
+          $p = Start-Process -FilePath $sdeExe -ArgumentList @('-ivb', '--', (Join-Path $ws 'phk-host.exe'), $dll, $sample, $outDir) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
           if (-not $p.WaitForExit(240000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Write-Host 'baseline-ivb TIMED OUT after 240s'; throw 'baseline-ivb TIMED OUT after 240s - see test-baseline-ivb.log' }
-          # With -chip_check SDE prints a violation to stderr and CONTINUES,
-          # propagating the guest's own exit code - so rc alone is meaningless.
-          # Gate on the log: presence of an out-of-ISA violation = AVX2 evidence.
-          $violation = Select-String -Path $log, $err -Pattern 'not supported|illegal instruction|chip_check|SDE ERROR|emulat' -ErrorAction SilentlyContinue | Select-Object -First 5
+          # With -ivb chip-check, SDE prints a violation to stderr and
+          # CONTINUES, propagating the guest's own exit code - so rc alone is
+          # meaningless. Gate on the log: presence of an out-of-ISA violation.
+          $violation = Select-String -Path $log, $err -Pattern 'not supported|illegal instruction|unsupported instruction' -ErrorAction SilentlyContinue | Select-Object -First 5
           if ($violation) {
               Add-Content -Path $env:GITHUB_ENV -Value "PHK_BASELINE_IVB_VIOLATION=1"
               Write-Host "baseline-ivb: chip_check VIOLATION detected (AVX2/AVX512 evidence):"
@@ -593,14 +599,14 @@ jobs:
           $log = Join-Path $ws 'test-stripped-ivb.log'
           $err = Join-Path $ws 'test-stripped-ivb.err.log'
           $sdeExe = Join-Path $env:SDE_DIR 'sde.exe'
-          $p = Start-Process -FilePath $sdeExe -ArgumentList @('-ivb', '-chip_check', '--', (Join-Path $ws 'phk-host.exe'), $dll, $sample, $outDir) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
+          $p = Start-Process -FilePath $sdeExe -ArgumentList @('-ivb', '--', (Join-Path $ws 'phk-host.exe'), $dll, $sample, $outDir) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
           if (-not $p.WaitForExit(240000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw 'stripped-ivb TIMED OUT after 240s - see test-stripped-ivb.log' }
           Write-Host "stripped-ivb SDE rc=$($p.ExitCode) (informational; SDE propagates the guest rc, see test-stripped-ivb.log)"
           # Acceptance: NO out-of-ISA violation in the SDE log (SDE continues
           # after printing one, so the exit code is not the signal). phk-host's
           # own rc (0 or 3) does not affect this arm - the E003 divergence is
           # reported, not gated.
-          $violation = Select-String -Path $log, $err -Pattern 'not supported|illegal instruction|chip_check|SDE ERROR|emulat' -ErrorAction SilentlyContinue | Select-Object -First 5
+          $violation = Select-String -Path $log, $err -Pattern 'not supported|illegal instruction|unsupported instruction' -ErrorAction SilentlyContinue | Select-Object -First 5
           if ($violation) {
               $violation | ForEach-Object { Write-Host ('  violation: ' + $_.Line.Trim()) }
               throw "stripped DLL SDE -ivb -chip_check VIOLATION detected - out-of-ISA instruction present, see test-stripped-ivb.log/.err.log"
@@ -657,7 +663,7 @@ jobs:
                   stripped_native_jpg_sha256 = $env:PHK_STRIPPED_NATIVE_JPG
                   stripped_ivb_jpg_sha256 = $env:PHK_STRIPPED_IVB_JPG
               }
-              sde = [ordered]@{ version = $env:PHK_SDE_VERSION; mode = '-ivb -chip_check'; license = 'Intel SDE free for use (not redistributable); LICENSE shipped in artifact' }
+              sde = [ordered]@{ version = $env:PHK_SDE_VERSION; mode = '-ivb (chip-check for Ivy Bridge)'; license = 'Intel SDE free for use (not redistributable); LICENSE shipped in artifact' }
               checks = [ordered]@{
                   stripped_native_inference = ($strippedNativeRc -in @(0, 3))   # E3 threw otherwise; 3 = E003 (divergence, reported)
                   stripped_ivb_chip_check = $true     # E6 threw otherwise (violation grep on SDE log)
