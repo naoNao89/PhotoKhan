@@ -333,8 +333,10 @@ try {
             Write-Host "reorder.cpp patched (AVX-512 call lines and their continue removed)"
         }
         # 5) snchwc.h: the sliding-kernel selector compares the platform kernel to
-        #    the stripped AVX512F kernels and returns the Sliding kernel - replace
-        #    the ENTIRE condition with false so both symbols disappear.
+        #    the stripped AVX512F kernels and returns the Sliding kernel. Remove
+        #    the WHOLE if-block (condition + return) so no AVX symbols remain and
+        #    no `if (false)` C4127 warning appears under /WX; the function just
+        #    returns the platform kernel.
         $snchwcH = Join-Path $RepoDir 'onnxruntime\core\mlas\lib\snchwc.h'
         if (Test-Path $snchwcH) {
             $snContent = Get-Content $snchwcH -Raw
@@ -344,16 +346,16 @@ try {
             if ($snContent -notmatch [regex]::Escape($cond)) {
                 Fail "snchwc.h AVX512F condition not found"
             }
-            $snContent = $snContent.Replace($cond, 'if (false) {  // AVX512F kernels stripped')
-            # The `return MlasConvDepthwiseFloatKernelAvx512FSliding;` inside the
-            # dead block still references the stripped kernel - remove that line.
-            $snLines = $snContent -split "`r?`n"
-            $snLines = $snLines | Where-Object {
-                $_ -notmatch '^\s*return MlasConvDepthwiseFloatKernelAvx512FSliding\s*;\s*$'
+            # block spans: condition (3 lines) + `return ...Sliding;` + closing `}`
+            $block = $cond + "`r`n" +
+                '        return MlasConvDepthwiseFloatKernelAvx512FSliding;' + "`r`n" +
+                '    }'
+            if ($snContent -notmatch [regex]::Escape($block)) {
+                Fail "snchwc.h AVX512F block not found"
             }
-            $snContent = $snLines -join "`r`n"
+            $snContent = $snContent.Replace($block, '')
             Set-Content -Path $snchwcH -Value $snContent -Encoding UTF8
-            Write-Host "snchwc.h patched (entire sliding-kernel condition -> false, return removed)"
+            Write-Host "snchwc.h patched (AVX512F selector block removed)"
         }
     } else {
         Write-Host "platform.cpp not found at $platformCpp (informational)"
