@@ -266,10 +266,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # ort-sys's rlib embeds the ORT archives (+bundle); force a rebuild so
-          # this DLL embeds the PRISTINE (un-stripped) libs built by C2-Baseline.
-          cargo clean -p ort-sys
-          if ($LASTEXITCODE -ne 0) { throw 'cargo clean -p ort-sys failed' }
+          # ort-sys's rlib embeds the ORT archives (+bundle); a FULL cargo clean
+          # (not `-p ort-sys` - the selector only matches workspace members, so a
+          # dependency's artifacts were left stale and the DLL reused the old
+          # embedded libs) guarantees this DLL embeds the PRISTINE libs built by
+          # C2-Baseline.
+          cargo clean
+          if ($LASTEXITCODE -ne 0) { throw 'cargo clean failed' }
           cargo build --release
           if ($LASTEXITCODE -ne 0) { throw 'baseline DLL build failed' }
           $src = 'target\release\phk_dll.dll'
@@ -334,10 +337,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'cargo fmt --check failed' }
           cargo test
           if ($LASTEXITCODE -ne 0) { throw 'cargo test failed' }
-          # Force ort-sys rebuild: its rlib embeds the ORT archives (+bundle), so
-          # this DLL must embed the STRIPPED libs built by C2-Strip.
-          cargo clean -p ort-sys
-          if ($LASTEXITCODE -ne 0) { throw 'cargo clean -p ort-sys failed' }
+          # Force a FULL rebuild: the ort-sys rlib embeds the ORT archives and the
+          # `-p ort-sys` selector left them stale (DLLs came out byte-identical in
+          # run 44532508012). Full clean guarantees the rlib embeds the STRIPPED
+          # libs built by C2-Strip.
+          cargo clean
+          if ($LASTEXITCODE -ne 0) { throw 'cargo clean failed' }
           cargo build --release
           if ($LASTEXITCODE -ne 0) { throw 'cargo build --release failed (static ORT link via ORT_LIB_PATH)' }
           $dll = 'target\release\phk_dll.dll'
@@ -410,9 +415,10 @@ jobs:
           ) -join [Environment]::NewLine
           $hostCs = Join-Path $ws 'phk-host.cs'
           Set-Content -Path $hostCs -Value $cs
-          & $csc /nologo /out:(Join-Path $ws 'phk-host.exe') /target:exe $hostCs
+          $hostExe = Join-Path $ws 'phk-host.exe'
+          & $csc /nologo "/out:$hostExe" /target:exe $hostCs
           if ($LASTEXITCODE -ne 0) { throw "csc compile failed (exit $LASTEXITCODE)" }
-          if (-not (Test-Path (Join-Path $ws 'phk-host.exe'))) { throw 'phk-host.exe not produced' }
+          if (-not (Test-Path $hostExe)) { throw 'phk-host.exe not produced' }
 
           # WER LocalDumps for the test host so real crashes leave a dump on the
           # runner (metadata only is uploaded - public repo, no raw memory).
