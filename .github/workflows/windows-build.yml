@@ -438,8 +438,13 @@ jobs:
           if (-not (Test-Path $vswhere)) { throw 'vswhere.exe not found' }
           $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $vsPath) { throw 'MSVC not found via vswhere' }
-          $cl = Get-ChildItem (Join-Path $vsPath 'VC\Tools\MSVC') -Recurse -Filter cl.exe | Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $cl) { throw 'cl.exe not found under VC\Tools\MSVC' }
+          # Pick the x64 host cl: string sort would pick Hostx86\x86 first
+          # ("x86" > "x64"), and linking an x86 cl against vcvars64's x64 LIB
+          # left every CRT+kernel32 symbol unresolved (LNK1120).
+          $cl = Get-ChildItem (Join-Path $vsPath 'VC\Tools\MSVC') -Recurse -Filter cl.exe |
+              Where-Object { $_.FullName -match '\\Hostx64\\x64\\cl\.exe$' } |
+              Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $cl) { throw 'x64 cl.exe not found under VC\Tools\MSVC' }
           $hostc = @(
               '#include <windows.h>',
               '#include <stdio.h>',
