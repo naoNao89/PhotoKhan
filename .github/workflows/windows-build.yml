@@ -430,6 +430,49 @@ jobs:
           if (-not (Test-Path $hostExe)) { throw 'phk-host.exe not produced' }
           Write-Host "phk-host.exe OK $((Get-Item $hostExe).Length) bytes"
 
+          # Native C host for the SDE arms: Pin/SDE cannot inject managed (.NET)
+          # processes (observed: "EnumerateInitialImages: assertion failed:
+          # nullptr == hBaseModule" -> NO STACK TRACE -> Detach). Same ABI, so
+          # native arms keep the .NET host and SDE arms get phk-hostc.exe.
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) { throw 'vswhere.exe not found' }
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) { throw 'MSVC not found via vswhere' }
+          $cl = Get-ChildItem (Join-Path $vsPath 'VC\Tools\MSVC') -Recurse -Filter cl.exe | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $cl) { throw 'cl.exe not found under VC\Tools\MSVC' }
+          $hostc = @(
+              '#include <windows.h>',
+              '#include <stdio.h>',
+              'typedef int (__stdcall *ProcessFn)(const char*, const char*);',
+              'typedef int (__stdcall *LastErrorFn)(char*, unsigned long long);',
+              'int main(int argc, char** argv) {',
+              '    if (argc < 4) { fprintf(stderr, "usage: host dll input outdir\n"); return 9; }',
+              '    printf("host: start dll=%s input=%s outdir=%s\n", argv[1], argv[2], argv[3]);',
+              '    HMODULE h = LoadLibraryA(argv[1]);',
+              '    if (!h) { fprintf(stderr, "LoadLibrary failed err=%lu\n", GetLastError()); return 10; }',
+              '    printf("host: LoadLibrary OK\n");',
+              '    ProcessFn p = (ProcessFn)(void*)GetProcAddress(h, "phk_process");',
+              '    LastErrorFn e = (LastErrorFn)(void*)GetProcAddress(h, "phk_last_error");',
+              '    if (!p || !e) { fprintf(stderr, "GetProcAddress failed\n"); return 11; }',
+              '    printf("host: GetProcAddress OK\n");',
+              '    int rc = p(argv[2], argv[3]);',
+              '    printf("host: phk_process returned rc=%d\n", rc);',
+              '    if (rc != 0) {',
+              '        char buf[1024]; (void)e(buf, 1024);',
+              '        fprintf(stderr, "phk_process rc=%d err=%s\n", rc, buf);',
+              '    }',
+              '    return rc;',
+              '}'
+          ) -join [Environment]::NewLine
+          $hostcSrc = Join-Path $ws 'phk-hostc.c'
+          Set-Content -Path $hostcSrc -Value $hostc
+          $hostcExe = Join-Path $ws 'phk-hostc.exe'
+          Write-Host "compiling phk-hostc.exe with $($cl.FullName)"
+          & $cl.FullName /nologo /O2 $hostcSrc "/Fe:$hostcExe" /link /SUBSYSTEM:CONSOLE
+          if ($LASTEXITCODE -ne 0) { throw "cl compile failed (exit $LASTEXITCODE)" }
+          if (-not (Test-Path $hostcExe)) { throw 'phk-hostc.exe not produced' }
+          Write-Host "phk-hostc.exe OK $((Get-Item $hostcExe).Length) bytes"
+
           # WER LocalDumps for the test host so real crashes leave a dump on the
           # runner (metadata only is uploaded - public repo, no raw memory).
           $werKey = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\phk-host.exe'
@@ -565,19 +608,30 @@ jobs:
           # argument after the -chip-check switch") - a usage error, not
           # evidence. Violation pattern is narrowed to actual instruction
           # messages so CLI errors cannot masquerade as AVX2 evidence.
-          $p = Start-Process -FilePath $sdeExe -ArgumentList @('-ivb', '--', (Join-Path $ws 'phk-host.exe'), $dll, $sample, $outDir) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
+          $p = Start-Process -FilePath $sdeExe -ArgumentList @('-ivb', '--', (Join-Path $ws 'phk-hostc.exe'), $dll, $sample, $outDir) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
           if (-not $p.WaitForExit(240000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Write-Host 'baseline-ivb TIMED OUT after 240s'; throw 'baseline-ivb TIMED OUT after 240s - see test-baseline-ivb.log' }
-          # With -ivb chip-check, SDE prints a violation to stderr and
-          # CONTINUES, propagating the guest's own exit code - so rc alone is
-          # meaningless. Gate on the log: presence of an out-of-ISA violation.
-          $violation = Select-String -Path $log, $err -Pattern 'not supported|illegal instruction|unsupported instruction' -ErrorAction SilentlyContinue | Select-Object -First 5
-          if ($violation) {
-              Add-Content -Path $env:GITHUB_ENV -Value "PHK_BASELINE_IVB_VIOLATION=1"
-              Write-Host "baseline-ivb: chip_check VIOLATION detected (AVX2/AVX512 evidence):"
-              $violation | ForEach-Object { Write-Host ('  ' + $_.Line.Trim()) }
-          } else {
+          # Pin/SDE injection crash (e.g. "assertion failed: nullptr ==
+          # hBaseModule") means NO emulation happened - that is UNVERIFIED, not
+          # "no violation".
+          $pinCrash = Select-String -Path $log, $err -Pattern 'assertion failed|NO STACK TRACE|Pin:' -ErrorAction SilentlyContinue | Select-Object -First 3
+          if ($pinCrash) {
               Add-Content -Path $env:GITHUB_ENV -Value "PHK_BASELINE_IVB_VIOLATION=0"
-              Write-Host 'baseline-ivb: NO chip_check violation in log (hypothesis unsupported on this path - investigate)'
+              Add-Content -Path $env:GITHUB_ENV -Value "PHK_BASELINE_IVB_UNVERIFIED=1"
+              Write-Host 'baseline-ivb: SDE/Pin injection CRASH - arm UNVERIFIED (no emulation ran):'
+              $pinCrash | ForEach-Object { Write-Host ('  ' + $_.Line.Trim()) }
+          } else {
+              # With -ivb chip-check, SDE prints a violation to stderr and
+              # CONTINUES, propagating the guest's own exit code - so rc alone is
+              # meaningless. Gate on the log: presence of an out-of-ISA violation.
+              $violation = Select-String -Path $log, $err -Pattern 'not supported|illegal instruction|unsupported instruction' -ErrorAction SilentlyContinue | Select-Object -First 5
+              if ($violation) {
+                  Add-Content -Path $env:GITHUB_ENV -Value "PHK_BASELINE_IVB_VIOLATION=1"
+                  Write-Host "baseline-ivb: chip-check VIOLATION detected (AVX2/AVX512 evidence):"
+                  $violation | ForEach-Object { Write-Host ('  ' + $_.Line.Trim()) }
+              } else {
+                  Add-Content -Path $env:GITHUB_ENV -Value "PHK_BASELINE_IVB_VIOLATION=0"
+                  Write-Host 'baseline-ivb: NO chip_check violation in log (hypothesis unsupported on this path - investigate)'
+              }
           }
           Write-Host "baseline-ivb SDE rc=$($p.ExitCode) (informational only; see test-baseline-ivb.log/.err.log)"
           Add-Content -Path $env:GITHUB_ENV -Value "PHK_BASELINE_IVB_RC=$($p.ExitCode)"
@@ -599,9 +653,16 @@ jobs:
           $log = Join-Path $ws 'test-stripped-ivb.log'
           $err = Join-Path $ws 'test-stripped-ivb.err.log'
           $sdeExe = Join-Path $env:SDE_DIR 'sde.exe'
-          $p = Start-Process -FilePath $sdeExe -ArgumentList @('-ivb', '--', (Join-Path $ws 'phk-host.exe'), $dll, $sample, $outDir) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
+          $p = Start-Process -FilePath $sdeExe -ArgumentList @('-ivb', '--', (Join-Path $ws 'phk-hostc.exe'), $dll, $sample, $outDir) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
           if (-not $p.WaitForExit(240000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw 'stripped-ivb TIMED OUT after 240s - see test-stripped-ivb.log' }
           Write-Host "stripped-ivb SDE rc=$($p.ExitCode) (informational; SDE propagates the guest rc, see test-stripped-ivb.log)"
+          # Pin/SDE injection crash means NO emulation ran - the arm is
+          # UNVERIFIED and must not pass.
+          $pinCrash = Select-String -Path $log, $err -Pattern 'assertion failed|NO STACK TRACE|Pin:' -ErrorAction SilentlyContinue | Select-Object -First 3
+          if ($pinCrash) {
+              $pinCrash | ForEach-Object { Write-Host ('  pinCrash: ' + $_.Line.Trim()) }
+              throw "stripped-ivb: SDE/Pin injection CRASH - arm UNVERIFIED, see test-stripped-ivb.log/.err.log"
+          }
           # Acceptance: NO out-of-ISA violation in the SDE log (SDE continues
           # after printing one, so the exit code is not the signal). phk-host's
           # own rc (0 or 3) does not affect this arm - the E003 divergence is
