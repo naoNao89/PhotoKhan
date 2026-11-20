@@ -832,6 +832,10 @@ jobs:
             phk-dll-baseline/
             phk-dll-stripped/
             photokhan-dll-bundle/
+            phk-host.exe
+            phk-hostc.exe
+            biden.jpg
+            avx2-control.exe
             report.json
             avx-symbols.txt
             avx-disasm.txt
