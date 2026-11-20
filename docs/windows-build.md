@@ -109,13 +109,15 @@ if ($rc -ne 0) {
 | Claim | Status |
 |---|---|
 | Build on windows-2022 runner (static ORT, no `onnxruntime.dll` in `phk_dll.dll`) | VERIFIED-BY-CI-RUN (prior runs) |
-| Native inference, baseline + stripped DLLs (deterministic input) | PENDING — chờ run đầu của E-compat |
-| **Intel SDE Ivy Bridge (`-ivb -chip_check`): stripped DLL passes, baseline DLL reports chip-check violation** | PENDING — chờ run đầu của E-compat (evidence: `test-*-ivb.log`, `report.json` — symbol/disassembly diagnostics in `avx-symbols.txt`, `avx-disasm.txt` are NOT treated as proof of executed instructions) |
+| Native inference, baseline + stripped DLLs (deterministic input) | VERIFIED-BY-CI-RUN (run 44649033509: baseline rc=0 + JPG; stripped rc=3 E003 — YuNet reports 2+ faces on a single-face portrait; strip changes detection behavior) |
+| **Intel SDE Ivy Bridge `-ivb` chip-check enforcement (positive control)** | VERIFIED-BY-CI-RUN (run 44649033509: `avx2-control.exe` VPMOVMSKB ymm → `SDE-ERROR: Executed instruction not valid for specified chip (IVYBRIDGE)`) |
+| **Baseline DLL under SDE `-ivb`** | VERIFIED-BY-CI-RUN: **NO violation** — pristine MLAS dispatches non-AVX2 kernels for the Ivy Bridge CPUID; the "0xC000001D = AVX2 kernels" hypothesis is **REFUTED on this path** |
+| **Stripped DLL under SDE `-ivb`** | VERIFIED-BY-CI-RUN: no violation, JPG produced (chip_check pass) |
 | Physical i5-3570 (Windows 10) run | **UNVERIFIED** — reported separately; only a real machine run can confirm the SDE-simulated result |
 | Windows 10 runtime | UNVERIFIED (needs a real Windows 10 machine) |
 | MSVCP140 / VC++ redist on a clean Windows 10 | UNVERIFIED (present on the runner; the DLL imports `MSVCP140.dll`, so target machines need the Microsoft Visual C++ 2015–2022 x64 Redistributable) |
 
-Evidence classification in `report.json`: **OBSERVED** = native + SDE executions on the runner; **CAUSAL HYPOTHESES** = i5-3570 0xC000001D due to MLAS AVX2 kernel execution (baseline-ivb chip-check expected to confirm); **UNVERIFIED** = physical i5-3570 / Windows 10 / real no-AVX2 hardware. Windows 10 compatibility is NOT asserted from runner evidence alone.
+Evidence classification in `report.json`: **OBSERVED** = native + SDE executions on the runner (incl. the AVX2 positive control); **CAUSAL HYPOTHESES** = the strip changes YuNet detection numerics (baseline rc=0 vs stripped rc=3 on identical input, non-reproducible across builds); **UNVERIFIED** = physical i5-3570 / Windows 10 / real no-AVX2 hardware. Windows 10 compatibility is NOT asserted from runner evidence alone. Symbol/disassembly diagnostics (`avx-symbols.txt`, `avx-disasm.txt`) are NOT treated as proof of executed instructions.
 
 ## 7. Licenses
 
