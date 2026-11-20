@@ -632,7 +632,7 @@ jobs:
           Write-Host "control SDE rc=$($p.ExitCode)"
           $pinCrash = Select-String -Path $log, $err -Pattern 'assertion failed|NO STACK TRACE|Pin:' -ErrorAction SilentlyContinue | Select-Object -First 3
           if ($pinCrash) { $pinCrash | ForEach-Object { Write-Host ('  pinCrash: ' + $_.Line.Trim()) }; throw 'positive control: SDE/Pin injection CRASH - arm unverifiable' }
-          $viol = Select-String -Path $log, $err -Pattern 'not supported|illegal instruction|unsupported instruction' -ErrorAction SilentlyContinue | Select-Object -First 5
+          $viol = Select-String -Path $log, $err -Pattern 'Executed instruction|not valid for specified chip|not supported|illegal instruction' -ErrorAction SilentlyContinue | Select-Object -First 5
           if (-not $viol) { throw 'SDE positive control FAILED: AVX2 instruction NOT flagged - chip-check is not enforcing; SDE arms would be vacuous' }
           Write-Host 'positive control: AVX2 instruction FLAGGED by -ivb chip-check (enforcement confirmed):'
           $viol | ForEach-Object { Write-Host ('  ' + $_.Line.Trim()) }
@@ -676,7 +676,7 @@ jobs:
               # With -ivb chip-check, SDE prints a violation to stderr and
               # CONTINUES, propagating the guest's own exit code - so rc alone is
               # meaningless. Gate on the log: presence of an out-of-ISA violation.
-              $violation = Select-String -Path $log, $err -Pattern 'not supported|illegal instruction|unsupported instruction' -ErrorAction SilentlyContinue | Select-Object -First 5
+              $violation = Select-String -Path $log, $err -Pattern 'Executed instruction|not valid for specified chip|not supported|illegal instruction' -ErrorAction SilentlyContinue | Select-Object -First 5
               if ($violation) {
                   Add-Content -Path $env:GITHUB_ENV -Value "PHK_BASELINE_IVB_VIOLATION=1"
                   Write-Host "baseline-ivb: chip-check VIOLATION detected (AVX2/AVX512 evidence):"
@@ -720,7 +720,7 @@ jobs:
           # after printing one, so the exit code is not the signal). phk-host's
           # own rc (0 or 3) does not affect this arm - the E003 divergence is
           # reported, not gated.
-          $violation = Select-String -Path $log, $err -Pattern 'not supported|illegal instruction|unsupported instruction' -ErrorAction SilentlyContinue | Select-Object -First 5
+          $violation = Select-String -Path $log, $err -Pattern 'Executed instruction|not valid for specified chip|not supported|illegal instruction' -ErrorAction SilentlyContinue | Select-Object -First 5
           if ($violation) {
               $violation | ForEach-Object { Write-Host ('  violation: ' + $_.Line.Trim()) }
               throw "stripped DLL SDE -ivb -chip_check VIOLATION detected - out-of-ISA instruction present, see test-stripped-ivb.log/.err.log"
