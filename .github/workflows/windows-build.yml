@@ -467,8 +467,12 @@ jobs:
           $hostcSrc = Join-Path $ws 'phk-hostc.c'
           Set-Content -Path $hostcSrc -Value $hostc
           $hostcExe = Join-Path $ws 'phk-hostc.exe'
-          Write-Host "compiling phk-hostc.exe with $($cl.FullName)"
-          & $cl.FullName /nologo /O2 $hostcSrc "/Fe:$hostcExe" /link /SUBSYSTEM:CONSOLE
+          Write-Host "compiling phk-hostc.exe with $($cl.FullName) (vcvars64)"
+          # cl.exe needs the MSVC/SDK INCLUDE+LIB environment; the A step only
+          # resolves the binary and exports nothing, so source vcvars64 first.
+          $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
+          $cmdLine = 'call "' + $vcvars + '" >nul 2>&1 && "' + $cl.FullName + '" /nologo /O2 "' + $hostcSrc + '" "/Fe:' + $hostcExe + '" /link /SUBSYSTEM:CONSOLE'
+          cmd.exe /d /c $cmdLine
           if ($LASTEXITCODE -ne 0) { throw "cl compile failed (exit $LASTEXITCODE)" }
           if (-not (Test-Path $hostcExe)) { throw 'phk-hostc.exe not produced' }
           Write-Host "phk-hostc.exe OK $((Get-Item $hostcExe).Length) bytes"
