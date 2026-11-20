@@ -472,15 +472,37 @@ jobs:
           $hostcSrc = Join-Path $ws 'phk-hostc.c'
           Set-Content -Path $hostcSrc -Value $hostc
           $hostcExe = Join-Path $ws 'phk-hostc.exe'
-          Write-Host "compiling phk-hostc.exe with $($cl.FullName) (vcvars64)"
           # cl.exe needs the MSVC/SDK INCLUDE+LIB environment; the A step only
           # resolves the binary and exports nothing, so source vcvars64 first.
           $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
-          $cmdLine = 'call "' + $vcvars + '" >nul 2>&1 && "' + $cl.FullName + '" /nologo /O2 "' + $hostcSrc + '" "/Fe:' + $hostcExe + '" /link /SUBSYSTEM:CONSOLE'
-          cmd.exe /d /c $cmdLine
-          if ($LASTEXITCODE -ne 0) { throw "cl compile failed (exit $LASTEXITCODE)" }
-          if (-not (Test-Path $hostcExe)) { throw 'phk-hostc.exe not produced' }
+          function Invoke-Cl([string]$src, [string]$out, [string]$extra) {
+              $cmdLine = 'call "' + $vcvars + '" >nul 2>&1 && "' + $cl.FullName + '" /nologo /O2 ' + $extra + ' "' + $src + '" "/Fe:' + $out + '" /link /SUBSYSTEM:CONSOLE'
+              cmd.exe /d /c $cmdLine
+              if ($LASTEXITCODE -ne 0) { throw "cl compile failed (exit $LASTEXITCODE): $src" }
+              if (-not (Test-Path $out)) { throw "cl did not produce $out" }
+          }
+          Write-Host "compiling phk-hostc.exe with $($cl.FullName) (vcvars64)"
+          Invoke-Cl $hostcSrc $hostcExe ''
           Write-Host "phk-hostc.exe OK $((Get-Item $hostcExe).Length) bytes"
+          # SDE positive control: a tiny exe executing one AVX2 instruction
+          # (VPMOVMSKB ymm) must be FLAGGED by -ivb chip-check. Compile with
+          # /arch:AVX2 so the compiler actually emits AVX2.
+          $control = @(
+              '#include <immintrin.h>',
+              '#include <stdio.h>',
+              'int main(void) {',
+              '    __m256i a = _mm256_set1_epi8(1);',
+              '    volatile int r = _mm256_movemask_epi8(a);',
+              '    printf("control movemask=%d\n", r);',
+              '    return 0;',
+              '}'
+          ) -join [Environment]::NewLine
+          $controlSrc = Join-Path $ws 'avx2-control.c'
+          Set-Content -Path $controlSrc -Value $control
+          $controlExe = Join-Path $ws 'avx2-control.exe'
+          Write-Host 'compiling avx2-control.exe (/arch:AVX2)'
+          Invoke-Cl $controlSrc $controlExe '/arch:AVX2'
+          Write-Host "avx2-control.exe OK $((Get-Item $controlExe).Length) bytes"
 
           # WER LocalDumps for the test host so real crashes leave a dump on the
           # runner (metadata only is uploaded - public repo, no raw memory).
@@ -594,6 +616,28 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "SDE_DIR=$($sdeBin.Directory.FullName)"
           Write-Host "sde version: $ver"
           Write-Host '=== E4b done ==='
+
+      - name: E4c - SDE positive control (AVX2 must be flagged by -ivb)
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '=== E4c positive control start ==='
+          $ws = $env:GITHUB_WORKSPACE
+          $sdeExe = Join-Path $env:SDE_DIR 'sde.exe'
+          $log = Join-Path $ws 'control.log'
+          $err = Join-Path $ws 'control.err.log'
+          $p = Start-Process -FilePath $sdeExe -ArgumentList @('-ivb', '--', (Join-Path $ws 'avx2-control.exe')) -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
+          if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw 'positive control TIMED OUT after 120s' }
+          Write-Host "control SDE rc=$($p.ExitCode)"
+          $pinCrash = Select-String -Path $log, $err -Pattern 'assertion failed|NO STACK TRACE|Pin:' -ErrorAction SilentlyContinue | Select-Object -First 3
+          if ($pinCrash) { $pinCrash | ForEach-Object { Write-Host ('  pinCrash: ' + $_.Line.Trim()) }; throw 'positive control: SDE/Pin injection CRASH - arm unverifiable' }
+          $viol = Select-String -Path $log, $err -Pattern 'not supported|illegal instruction|unsupported instruction' -ErrorAction SilentlyContinue | Select-Object -First 5
+          if (-not $viol) { throw 'SDE positive control FAILED: AVX2 instruction NOT flagged - chip-check is not enforcing; SDE arms would be vacuous' }
+          Write-Host 'positive control: AVX2 instruction FLAGGED by -ivb chip-check (enforcement confirmed):'
+          $viol | ForEach-Object { Write-Host ('  ' + $_.Line.Trim()) }
+          Add-Content -Path $env:GITHUB_ENV -Value "PHK_SDE_POSITIVE_CONTROL=1"
+          Write-Host '=== E4c done ==='
 
       - name: E5 - Arm baseline-ivb (expected chip-check violation = AVX2 evidence)
         shell: pwsh
@@ -733,7 +777,7 @@ jobs:
                   stripped_native_jpg_sha256 = $env:PHK_STRIPPED_NATIVE_JPG
                   stripped_ivb_jpg_sha256 = $env:PHK_STRIPPED_IVB_JPG
               }
-              sde = [ordered]@{ version = $env:PHK_SDE_VERSION; mode = '-ivb (chip-check for Ivy Bridge)'; license = 'Intel SDE free for use (not redistributable); LICENSE shipped in artifact' }
+              sde = [ordered]@{ version = $env:PHK_SDE_VERSION; mode = '-ivb (chip-check for Ivy Bridge)'; positive_control = ($env:PHK_SDE_POSITIVE_CONTROL -eq '1'); license = 'Intel SDE free for use (not redistributable); LICENSE shipped in artifact' }
               checks = [ordered]@{
                   stripped_native_inference = ($strippedNativeRc -in @(0, 3))   # E3 threw otherwise; 3 = E003 (divergence, reported)
                   stripped_ivb_chip_check = $true     # E6 threw otherwise (violation grep on SDE log)
@@ -803,6 +847,8 @@ jobs:
             sde-version.txt
             sde-help.txt
             sde-LICENSE.txt
+            control.log
+            control.err.log
             crash-report.txt
           if-no-files-found: warn
 
